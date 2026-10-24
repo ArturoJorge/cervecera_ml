@@ -78,7 +78,6 @@ pandas==3.0.6
 pandocfilters==1.5.1
 parso==0.8.7
 pillow==12.3.0
-pip @ file:///home/task_178792879927882/croot/pip_1787928831568/work
 platformdirs==4.12.4
 prometheus-client==0.26.0
 prompt-toolkit==3.0.53

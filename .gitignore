@@ -3,5 +3,5 @@
 .vgit statusenv
 __pycache__/
 .vscode/
-/raw/
-/clean/
+raw/
+clean/

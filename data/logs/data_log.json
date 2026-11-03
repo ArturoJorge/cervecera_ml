@@ -48,5 +48,16 @@
       "Las 15 variables más correlacionadas en este intento: Index(['frio (kw)', 'servicios (kw)', 'agua planta (hl)', 'planta de agua (hl)', 'kw cond 5. 6 y 9', 'produccion (hl)', 'kw trafo 11', 'kw trafo 10', 'agua cond rec', 'elaboracion (kw)', 'kw mycom 7', 'agua cond evaporativos', 'aire producido (m3)', 'meta et planta', 'meta et envasado'], dtype='str')"
     ],
     "comments": "Mediana de Conglomerado KPI"
+  },
+  {
+    "version": "v5",
+    "created_at": "2026-11-03",
+    "output": "data/clean/df_total.xlsx",
+    "sha256": "18830c0640cd0d073e506fc15e4b8e101819fb24d4dc153df031941a6d8037a3",
+    "parent_sha256": "5b13813d2b537f68260c6e60ec8e79bd440639536106857c02b5b4aa72e5bd5b",
+    "transformations": [
+      "Definimos quedarnos con la media como método para juntar los datos de conglomerado KPI"
+    ],
+    "comments": "Elegimos esa porque fue la que nos agrego la mayor cantidad de variables con una alta correlación con la objetivo"
   }
 ]

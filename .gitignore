@@ -1,8 +1,9 @@
 .env
 .venv/
-.vgit statusenv
+.venv
 __pycache__/
 .vscode/
 raw/
 clean/
 .claude
+graphify-out/

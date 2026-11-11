@@ -44,7 +44,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from sklearn.impute import KNNImputer, SimpleImputer
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
+from sklearn.preprocessing import PowerTransformer
 
 # =============================================================================
 # Rutas y constantes
@@ -355,6 +356,13 @@ class ConfigOutliers:
     percentiles: tuple[float, float] = (0.01, 0.99)
     excluir: list[str] = field(default_factory=list)     # columnas a las que no se les tocan outliers
 
+@dataclass
+class ConfigScaler:
+    metodo: Literal["standard", "robust", "minmax"] = "standard"
+
+@dataclass
+class ConfigTransformer:
+    metodo: Literal["yeo-johnson", "log", "boxcox", "sqrt", None] = "yeo-johnson"
 
 @dataclass
 class ConfigSplit:
@@ -388,16 +396,22 @@ class Preprocess:
         invalidos: ConfigInvalidos | None = _DEFAULT, # valores invalidos
         faltantes: ConfigFaltantes | None = _DEFAULT, # valores faltantes
         outliers: ConfigOutliers | None = _DEFAULT,   # valores atípicos
+        scaler: ConfigScaler | None = _DEFAULT,       # configuración del escalador
+        transformer: ConfigTransformer | None = _DEFAULT, # configuración del transformador
         split: ConfigSplit = _DEFAULT,                # configuración del train/test split
 
         verbose: bool = True,
     ):
         self.target = target
         self.col_fecha = col_fecha
+        self.scaler = None
+        self.transformer = None
         # sin argumento -> config por defecto; None -> paso desactivado
         self.invalidos = ConfigInvalidos() if invalidos is _DEFAULT else invalidos
         self.faltantes = ConfigFaltantes() if faltantes is _DEFAULT else faltantes
         self.outliers = ConfigOutliers() if outliers is _DEFAULT else outliers
+        self.scaler = ConfigScaler() if scaler is _DEFAULT else scaler
+        self.transformer = ConfigTransformer() if transformer is _DEFAULT else transformer
         self.split = ConfigSplit() if split in (_DEFAULT, None) else split
         self.verbose = verbose
 
@@ -465,7 +479,30 @@ class Preprocess:
 
     def _cols_outliers(self, X: pd.DataFrame) -> pd.Index:
         return X.columns.difference(self.outliers.excluir, sort=False)
+    
+    def _entrenar_scaler(self, X):
+        cls = {"standard": StandardScaler, "robust": RobustScaler, "minmax": MinMaxScaler}[self.scaler.metodo]
+        self._scaler = cls().fit(X)
+       
+    
+    def _aplicar_scaler(self, X):
+        return pd.DataFrame(self._scaler.transform(X), index=X.index, columns=X.columns)
+    
+    def _entrenar_transformer(self, X):
+        m = self.transformer.metodo
+        if m in ("yeo-johnson", "boxcox"):
+            metodo = "yeo-johnson" if m == "yeo-johnson" else "box-cox"
+            self._transformer = PowerTransformer(method=metodo, standardize=False).fit(X)
 
+    def _aplicar_transformer(self, X):
+        m = self.transformer.metodo
+        if m in ("yeo-johnson", "boxcox"):
+            return pd.DataFrame(self._transformer.transform(X), index=X.index, columns=X.columns)
+        if m == "log":
+            return np.log1p(X)
+        if m == "sqrt":
+            return np.sqrt(X)
+        raise ValueError(f"Transformación inválida: {m!r}")
     # ------------------------------------------------------------------ fit / transform
     def fit(self, train: pd.DataFrame) -> "Preprocess":
         self._features_fit = self._features(train)
@@ -480,6 +517,15 @@ class Preprocess:
             self._lim_outliers = self._limites_outliers(X[cols])
             X[cols], _ = self._aplicar_limites(X[cols], *self._lim_outliers, self.outliers.accion)
 
+        if self.transformer:
+            self._entrenar_transformer(X)
+            X = self._aplicar_transformer(X)
+            
+        if self.scaler:
+            self._entrenar_scaler(X)
+            X = self._aplicar_scaler(X)
+
+
         if self.faltantes:
             cfg = self.faltantes
             self._cols_descartar = (
@@ -488,7 +534,7 @@ class Preprocess:
             )
             X = X.drop(columns=self._cols_descartar)
             if cfg.estrategia == "knn":
-                # KNN usa distancias: sin escalar, las columnas con valores grandes dominan
+                # escalamos para aplicar KNN 
                 self._escalador = StandardScaler().fit(X)
                 self._imputador = KNNImputer(n_neighbors=cfg.n_vecinos, keep_empty_features=True)
                 self._imputador.fit(self._escalador.transform(X))
@@ -528,6 +574,14 @@ class Preprocess:
             cols = self._cols_outliers(X)
             X[cols], log["outliers_valores"] = self._aplicar_limites(X[cols], *self._lim_outliers, self.outliers.accion)
 
+        if self._aplicar_transformer:
+            X = self._aplicar_transformer(X)
+            log["Transformación usada: "] = self.transformer.metodo
+
+        if self.scaler:
+            X = self._aplicar_scaler(X)
+            log["Scaler usado: "] = self.scaler.metodo
+        
         if self.faltantes:
             X = X.drop(columns=self._cols_descartar)
             log["columnas_descartadas_por_nulos"] = len(self._cols_descartar)
@@ -561,7 +615,7 @@ class Preprocess:
     def resumen(self):
         """Configuración usada y qué hizo cada paso en train/test."""
         cfgs = {"invalidos": self.invalidos, "outliers": self.outliers,
-                "faltantes": self.faltantes, "split": self.split}
+                "faltantes": self.faltantes, "split": self.split, "transformer": self.transformer, "scaler": self.scaler}
         return {
             "config": {k: asdict(v) if v else None for k, v in cfgs.items()},
             "pasos": self._log,

@@ -42,6 +42,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+import requests
 from scipy import stats
 from sklearn.impute import KNNImputer, SimpleImputer
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
@@ -67,6 +68,21 @@ TARGET = "frio_mañana (kw)"
 HOJA_KPI = "Consolidado KPI"
 CRITERIOS_KPI = {"sum", "mean", "median"}
 REGISTROS_DIA = 25  # 24 registros horarios + el cierre; con menos el día está incompleto
+
+# Clima de la planta (Tecate, Baja California) desde Open-Meteo
+LAT_PLANTA, LON_PLANTA, TZ_PLANTA = 32.5725, -116.6266, "America/Tijuana"
+RUTA_CLIMA = ROOT / "data" / "clima" / "clima_tecate.csv"  # caché, para no pegarle a la API cada vez
+URL_OPEN_METEO = "https://archive-api.open-meteo.com/v1/archive"
+VARS_CLIMA = {  # variable diaria de Open-Meteo -> nombre de columna
+    "temperature_2m_mean": "temp media (°c)",
+    "temperature_2m_max": "temp max (°c)",
+    "temperature_2m_min": "temp min (°c)",
+    "relative_humidity_2m_mean": "humedad media (%)",
+    "relative_humidity_2m_max": "humedad max (%)",
+    "relative_humidity_2m_min": "humedad min (%)",
+}
+# features externas (clima y mes): inválidos y outliers no las tocan
+COLS_SIN_LIMITES = [*VARS_CLIMA.values(), "mes_sin", "mes_cos"]
 RANDOM_STATE = 42
 
 # =============================================================================
@@ -231,6 +247,44 @@ def completar_dias(df: pd.DataFrame) -> pd.DataFrame:
     return df.copy().reset_index()  # copy: el .loc por columna deja el frame fragmentado
 
 
+def descargar_clima(inicio, fin, ruta_cache: str | Path = RUTA_CLIMA) -> pd.DataFrame:
+    """Clima diario de la planta entre `inicio` y `fin` (inclusive). Usa la caché si cubre el rango;
+    si no, lo baja de Open-Meteo y actualiza la caché."""
+    inicio, fin = pd.Timestamp(inicio).normalize(), pd.Timestamp(fin).normalize()
+    ruta_cache = Path(ruta_cache)
+    if ruta_cache.exists():
+        clima = pd.read_csv(ruta_cache, parse_dates=[COL_FECHA])
+        if clima[COL_FECHA].min() <= inicio and clima[COL_FECHA].max() >= fin:
+            return clima[clima[COL_FECHA].between(inicio, fin)].reset_index(drop=True)
+
+    resp = requests.get(URL_OPEN_METEO, timeout=60, params={
+        "latitude": LAT_PLANTA, "longitude": LON_PLANTA, "timezone": TZ_PLANTA,
+        "start_date": inicio.date().isoformat(), "end_date": fin.date().isoformat(),
+        "daily": ",".join(VARS_CLIMA),
+    })
+    resp.raise_for_status()
+    clima = pd.DataFrame(resp.json()["daily"]).rename(columns={"time": COL_FECHA, **VARS_CLIMA})
+    clima[COL_FECHA] = pd.to_datetime(clima[COL_FECHA])
+    ruta_cache.parent.mkdir(parents=True, exist_ok=True)
+    clima.to_csv(ruta_cache, index=False)
+    return clima
+
+
+def agregar_clima(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega temperatura y humedad (media, máx, mín) de cada día."""
+    clima = descargar_clima(df[COL_FECHA].min(), df[COL_FECHA].max())
+    return df.merge(clima, on=COL_FECHA, how="left")
+
+
+def agregar_mes_ciclico(df: pd.DataFrame) -> pd.DataFrame:
+    """Mes como seno/coseno: diciembre queda al lado de enero. Hacen falta los dos
+    (con uno solo, dos meses distintos dan el mismo valor)."""
+    df = df.copy()
+    angulo = 2 * np.pi * (df[COL_FECHA].dt.month - 1) / 12
+    df["mes_sin"], df["mes_cos"] = np.sin(angulo), np.cos(angulo)
+    return df
+
+
 def agregar_target(df: pd.DataFrame, col_origen: str = "frio (kw)", nombre: str = TARGET) -> pd.DataFrame:
     """Crea la variable objetivo: el valor de `col_origen` del día siguiente."""
     df = df.copy()
@@ -243,6 +297,7 @@ def construir_dataset(
     crit_kpi: str = "mean",
     min_nulos: int = 1100,
     umbral_varianza: float = 10,
+    clima: bool = True,
     guardar: str | Path | None = None,
     versionar: bool = False,
     transformaciones: list[str] | None = None,
@@ -252,7 +307,8 @@ def construir_dataset(
     """Limpieza de los .xlsx crudos.
 
     procesar_excel -> juntar_datasets -> borrar_columnas_vacias
-    -> convertir_object_a_numerico -> completar_dias -> agregar_target.
+    -> convertir_object_a_numerico -> completar_dias -> agregar_clima (si clima=True)
+    -> agregar_mes_ciclico -> agregar_target.
 
     Si `guardar` es una ruta, escribe el xlsx. Si además `versionar=True`, lo registra
     en data_log.json (requiere `guardar`).
@@ -263,6 +319,9 @@ def construir_dataset(
     df = convertir_object_a_numerico(df)
     n_antes = len(df)
     df = completar_dias(df)
+    if clima:
+        df = agregar_clima(df)
+    df = agregar_mes_ciclico(df)
     df = agregar_target(df)
     if verbose:
         print(f"Días agregados como promedio anterior/siguiente: {len(df) - n_antes}")
@@ -511,7 +570,7 @@ class Preprocess:
         return X, int(fuera.to_numpy().sum())
 
     def _cols_outliers(self, X: pd.DataFrame) -> pd.Index:
-        return X.columns.difference(self.outliers.excluir, sort=False)
+        return X.columns.difference([*self.outliers.excluir, *COLS_SIN_LIMITES], sort=False)
 
     def _paso(self, msg: str) -> None:
         if self.verbose:
@@ -547,7 +606,7 @@ class Preprocess:
         X = train[self._features_fit].astype("float64")
 
         if self.invalidos:  # límites fijos, no dependen de los datos
-            self._lim_invalidos = self._limites_invalidos(X.columns)
+            self._lim_invalidos = self._limites_invalidos(X.columns.difference(COLS_SIN_LIMITES, sort=False))
             accion = "delete" if self.invalidos.accion == "delete" else "nan"
             X, n = self._aplicar_limites(X, *self._lim_invalidos, accion)
             self._paso(f"[fit] inválidos ({accion}): {n} valores, quedan {len(X)} filas")

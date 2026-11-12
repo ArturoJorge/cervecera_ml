@@ -66,6 +66,7 @@ COL_FECHA = "fecha"
 TARGET = "frio_mañana (kw)"
 HOJA_KPI = "Consolidado KPI"
 CRITERIOS_KPI = {"sum", "mean", "median"}
+REGISTROS_DIA = 25  # 24 registros horarios + el cierre; con menos el día está incompleto
 RANDOM_STATE = 42
 
 # =============================================================================
@@ -97,11 +98,13 @@ def _normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
 
 def limpiar(df: pd.DataFrame) -> pd.DataFrame:
     """Normaliza columnas, se queda solo con los cierres de día (>= 23:30) y crea `fecha`.
+    Descarta los días incompletos (< REGISTROS_DIA registros); después `completar_dias` los rellena.
     Agrega `_n` (orden de aparición de las fecha repetida)."""
     df = _normalizar_columnas(df)
     dia, hora = _parsear_dia_hora(df)
 
-    es_cierre = hora >= pd.Timedelta(hours=23, minutes=30)
+    completo = dia.map(dia.value_counts()) >= REGISTROS_DIA
+    es_cierre = (hora >= pd.Timedelta(hours=23, minutes=30)) & completo
     df = df[es_cierre].copy()
 
     df[COL_FECHA] = dia[es_cierre]
@@ -215,6 +218,19 @@ def convertir_object_a_numerico(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def completar_dias(df: pd.DataFrame) -> pd.DataFrame:
+    """Agrega los días que faltan en el calendario (incompletos o sin registro) como el promedio
+    del día válido anterior y el siguiente, para que el shift del target sea siempre al día siguiente."""
+    df = df.set_index(COL_FECHA).sort_index()
+    df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq="D", name=COL_FECHA))
+    nuevos = df.isna().all(axis=1)
+    num = df.select_dtypes("number").columns
+    df = df.astype(dict.fromkeys(num, "float64"))  # el promedio puede no ser entero (columnas Int64)
+    promedio = (df[num].ffill() + df[num].bfill()) / 2
+    df.loc[nuevos, num] = promedio.loc[nuevos]
+    return df.copy().reset_index()  # copy: el .loc por columna deja el frame fragmentado
+
+
 def agregar_target(df: pd.DataFrame, col_origen: str = "frio (kw)", nombre: str = TARGET) -> pd.DataFrame:
     """Crea la variable objetivo: el valor de `col_origen` del día siguiente."""
     df = df.copy()
@@ -236,7 +252,7 @@ def construir_dataset(
     """Limpieza de los .xlsx crudos.
 
     procesar_excel -> juntar_datasets -> borrar_columnas_vacias
-    -> convertir_object_a_numerico -> agregar_target.
+    -> convertir_object_a_numerico -> completar_dias -> agregar_target.
 
     Si `guardar` es una ruta, escribe el xlsx. Si además `versionar=True`, lo registra
     en data_log.json (requiere `guardar`).
@@ -245,11 +261,14 @@ def construir_dataset(
     df = juntar_datasets(partes)
     df, eliminadas = borrar_columnas_vacias(df, min_nulos=min_nulos, umbral_varianza=umbral_varianza)
     df = convertir_object_a_numerico(df)
+    n_antes = len(df)
+    df = completar_dias(df)
     df = agregar_target(df)
+    if verbose:
+        print(f"Días agregados como promedio anterior/siguiente: {len(df) - n_antes}")
 
     if verbose:
         print(f"Dataset construido: {df.shape} | columnas eliminadas: {len(eliminadas)}")
-
     if guardar is not None:
         Path(guardar).parent.mkdir(parents=True, exist_ok=True)
         df.to_excel(guardar, index=False)
@@ -258,6 +277,7 @@ def construir_dataset(
             raise ValueError("Para versionar hay que pasar `guardar` (se versiona el archivo escrito)")
         trans = transformaciones or [f"construir_dataset con crit_kpi={crit_kpi!r}"]
         registrar_version(guardar, trans, comentario=comentario)
+    
     return df
 
 
@@ -334,10 +354,10 @@ def registrar_version(
 @dataclass
 class ConfigInvalidos:
     """Valores imposibles. Se evalúan sin aprender nada de los datos."""
-    no_negativas: list[str] | Literal["all"] = "all"   # columnas que no pueden ser < 0
+    no_negativas: list[str] | Literal["all", "ee"] = "ee"   # columnas que no pueden ser < 0 ("ee" = las de eficiencia)
     max_abs: float | None = 1_000_000                   # |valor| > max_abs es imposible
     rangos: dict[str, tuple[float | None, float | None]] = field(default_factory=dict)  # (mín, máx) por columna
-    accion: Literal["nan", "clip"] = "nan"
+    accion: Literal["nan", "clip", "delete"] = "nan"
 
 
 @dataclass
@@ -350,7 +370,7 @@ class ConfigFaltantes:
 @dataclass
 class ConfigOutliers:
     metodo: Literal["iqr", "zscore_mod", "percentil"] = "iqr"
-    accion: Literal["clip", "nan"] = "clip"
+    accion: Literal["clip", "nan", "delete"] = "clip"
     k_iqr: float = 1.5
     umbral_zmod: float = 3.5
     percentiles: tuple[float, float] = (0.01, 0.99)
@@ -371,7 +391,7 @@ class ConfigSplit:
 
 
 _ESTRATEGIAS_FALTANTES = {"mean", "median", "interpolate", "knn"}
-_ACCIONES = {"nan", "clip"}
+_ACCIONES = {"nan", "clip", "delete"}
 _METODOS_OUTLIERS = {"iqr", "zscore_mod", "percentil"}
 _DEFAULT = object()  # centinela: distingue "no pasé config" de "None = desactivar paso"
 
@@ -400,7 +420,7 @@ class Preprocess:
         transformer: ConfigTransformer | None = _DEFAULT, # configuración del transformador
         split: ConfigSplit = _DEFAULT,                # configuración del train/test split
 
-        verbose: bool = True,
+        verbose: bool = False,  # True: escribe en consola cada paso que se va haciendo
     ):
         self.target = target
         self.col_fecha = col_fecha
@@ -444,7 +464,12 @@ class Preprocess:
         cfg = self.invalidos
         lo = pd.Series(-np.inf, index=columnas)
         hi = pd.Series(np.inf, index=columnas)
-        no_neg = columnas if cfg.no_negativas == "all" else columnas.intersection(cfg.no_negativas)
+        if cfg.no_negativas == "all":
+            no_neg = columnas
+        elif cfg.no_negativas == "ee":
+            no_neg = columnas[columnas.str.startswith("ee")]
+        else:
+            no_neg = columnas.intersection(cfg.no_negativas)
         lo[no_neg] = 0.0
         if cfg.max_abs is not None:
             lo, hi = lo.clip(lower=-cfg.max_abs), hi.clip(upper=cfg.max_abs)
@@ -471,14 +496,26 @@ class Preprocess:
 
     @staticmethod
     def _aplicar_limites(X: pd.DataFrame, lo: pd.Series, hi: pd.Series, accion: str) -> tuple[pd.DataFrame, int]:
-        """Recorta o pasa a NaN lo que cae fuera de [lo, hi]. Devuelve (X, valores tocados)."""
+        """Sobre las columnas de lo/hi: recorta, pasa a NaN o borra la fila de lo que cae fuera
+        de [lo, hi]. Devuelve (X, valores tocados)."""
+        cols = lo.index
         lo, hi = lo.fillna(-np.inf), hi.fillna(np.inf)  # columnas sin datos en train: no se tocan
-        fuera = X.lt(lo, axis=1) | X.gt(hi, axis=1)
-        X = X.clip(lo, hi, axis=1) if accion == "clip" else X.mask(fuera)
+        fuera = X[cols].lt(lo, axis=1) | X[cols].gt(hi, axis=1)
+        X = X.copy()
+        if accion == "delete":
+            X = X[~fuera.any(axis=1)]
+        elif accion == "clip":
+            X[cols] = X[cols].clip(lo, hi, axis=1)
+        else:
+            X[cols] = X[cols].mask(fuera)
         return X, int(fuera.to_numpy().sum())
 
     def _cols_outliers(self, X: pd.DataFrame) -> pd.Index:
         return X.columns.difference(self.outliers.excluir, sort=False)
+
+    def _paso(self, msg: str) -> None:
+        if self.verbose:
+            print(f"  -> {msg}")
     
     def _entrenar_scaler(self, X):
         cls = {"standard": StandardScaler, "robust": RobustScaler, "minmax": MinMaxScaler}[self.scaler.metodo]
@@ -505,26 +542,30 @@ class Preprocess:
         raise ValueError(f"Transformación inválida: {m!r}")
     # ------------------------------------------------------------------ fit / transform
     def fit(self, train: pd.DataFrame) -> "Preprocess":
+        self._paso(f"[fit] train {train.shape}")
         self._features_fit = self._features(train)
         X = train[self._features_fit].astype("float64")
 
         if self.invalidos:  # límites fijos, no dependen de los datos
             self._lim_invalidos = self._limites_invalidos(X.columns)
-            X, _ = self._aplicar_limites(X, *self._lim_invalidos, "nan")
+            accion = "delete" if self.invalidos.accion == "delete" else "nan"
+            X, n = self._aplicar_limites(X, *self._lim_invalidos, accion)
+            self._paso(f"[fit] inválidos ({accion}): {n} valores, quedan {len(X)} filas")
 
         if self.outliers:  # límites aprendidos en train (ya sin inválidos)
-            cols = self._cols_outliers(X)
-            self._lim_outliers = self._limites_outliers(X[cols])
-            X[cols], _ = self._aplicar_limites(X[cols], *self._lim_outliers, self.outliers.accion)
+            self._lim_outliers = self._limites_outliers(X[self._cols_outliers(X)])
+            X, n = self._aplicar_limites(X, *self._lim_outliers, self.outliers.accion)
+            self._paso(f"[fit] outliers ({self.outliers.metodo}, {self.outliers.accion}): {n} valores, quedan {len(X)} filas")
 
         if self.transformer:
             self._entrenar_transformer(X)
             X = self._aplicar_transformer(X)
-            
+            self._paso(f"[fit] transformer {self.transformer.metodo} entrenado")
+
         if self.scaler:
             self._entrenar_scaler(X)
             X = self._aplicar_scaler(X)
-
+            self._paso(f"[fit] scaler {self.scaler.metodo} entrenado")
 
         if self.faltantes:
             cfg = self.faltantes
@@ -542,6 +583,7 @@ class Preprocess:
                 # en interpolate, la mediana de train rellena lo que no se pueda interpolar
                 estr = "mean" if cfg.estrategia == "mean" else "median"
                 self._imputador = SimpleImputer(strategy=estr, keep_empty_features=True).fit(X)
+            self._paso(f"[fit] imputador {cfg.estrategia} entrenado, {len(self._cols_descartar)} columnas descartadas por nulos")
 
         self._fitted = True  # esto está para que no transformemos sin fittear
         return self
@@ -561,38 +603,44 @@ class Preprocess:
         if not self._fitted:
             raise RuntimeError("El preprocess no está fitteado (。_。)")
         log = {"filas_inicio": len(df)}
+        self._paso(f"[{nombre}] inicio {df.shape}")
         if self.col_fecha in df.columns:
             df = df.sort_values(self.col_fecha)
         if self.target in df.columns:
             df = df.dropna(subset=[self.target])  # sin target no sirve ni para entrenar ni para evaluar
+            self._paso(f"[{nombre}] filas sin target eliminadas: {log['filas_inicio'] - len(df)}")
         X = df[self._features_fit].astype("float64")
 
         if self.invalidos:
             X, log["invalidos_valores"] = self._aplicar_limites(X, *self._lim_invalidos, self.invalidos.accion)
+            self._paso(f"[{nombre}] inválidos ({self.invalidos.accion}): {log['invalidos_valores']} valores, quedan {len(X)} filas")
 
         if self.outliers:
-            cols = self._cols_outliers(X)
-            X[cols], log["outliers_valores"] = self._aplicar_limites(X[cols], *self._lim_outliers, self.outliers.accion)
+            X, log["outliers_valores"] = self._aplicar_limites(X, *self._lim_outliers, self.outliers.accion)
+            self._paso(f"[{nombre}] outliers ({self.outliers.metodo}, {self.outliers.accion}): {log['outliers_valores']} valores, quedan {len(X)} filas")
 
-        if self._aplicar_transformer:
+        if self.transformer:
             X = self._aplicar_transformer(X)
-            log["Transformación usada: "] = self.transformer.metodo
+            log["transformer"] = self.transformer.metodo
+            self._paso(f"[{nombre}] transformer {self.transformer.metodo} aplicado")
 
         if self.scaler:
             X = self._aplicar_scaler(X)
-            log["Scaler usado: "] = self.scaler.metodo
-        
+            log["scaler"] = self.scaler.metodo
+            self._paso(f"[{nombre}] scaler {self.scaler.metodo} aplicado")
+
         if self.faltantes:
             X = X.drop(columns=self._cols_descartar)
             log["columnas_descartadas_por_nulos"] = len(self._cols_descartar)
             log["faltantes_valores"] = int(X.isna().to_numpy().sum())
             X = self._imputar(X)
+            self._paso(f"[{nombre}] faltantes ({self.faltantes.estrategia}): {log['faltantes_valores']} valores imputados")
 
         log["filas_fin"] = len(X)
         self._log[nombre] = log
-        if self.verbose:
-            print(f"[{nombre}] {log}")
-        return df[[c for c in (self.col_fecha, self.target) if c in df.columns]].join(X)
+        self._paso(f"[{nombre}] fin {X.shape}")
+        # inner: si se borraron filas (accion="delete") no vuelven
+        return df[[c for c in (self.col_fecha, self.target) if c in df.columns]].join(X, how="inner")
 
     def fit_transform(self, train: pd.DataFrame) -> pd.DataFrame:
         return self.fit(train).transform(train, nombre="train")

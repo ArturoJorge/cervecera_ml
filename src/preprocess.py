@@ -20,10 +20,12 @@ Ejemplo de uso
         invalidos=ConfigInvalidos(accion="nan"),
         outliers=ConfigOutliers(metodo="zscore_mod", accion="clip"),
         faltantes=ConfigFaltantes(estrategia="knn", n_vecinos=5),  # mean | median | interpolate | knn
-        split=ConfigSplit(test_size=0.15),
+        split=ConfigSplit(test_size=0.15, val_size=0.15),
     )
-    X_train, X_test, y_train, y_test = pp.run(df)
+    X_train, X_val, X_test, y_train, y_val, y_test = pp.run(df)
     print(pp.resumen())
+    guardar_dataset_final(pp, {"train": (X_train, y_train), "val": (X_val, y_val),
+                               "test": (X_test, y_test)}, script="src/main.py")
 
 Para procesar un solo .xlsx:
     df_uno = procesar_excel("data/raw/Totalizadores Planta 2020_2022.xlsx")
@@ -35,7 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, datetime
 from functools import reduce
 from pathlib import Path
 from typing import Literal
@@ -56,6 +58,9 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "raw"
 RUTA_LIMPIO = ROOT / "data" / "clean" / "df_total.xlsx"
 RUTA_REGISTRO = ROOT / "data" / "logs" / "data_log.json"
+RUTA_FINAL = ROOT / "data" / "processed" / "dataset_final.csv"
+RUTA_LINEAGE = ROOT / "data" / "logs" / "data_lineage.json"
+RUTA_CHECKSUMS = ROOT / "data" / "logs" / "checksums.json"
 
 RAW_DEFAULT = [
     RAW_DIR / "Totalizadores Planta - 2021_2023.xlsx",
@@ -81,8 +86,15 @@ VARS_CLIMA = {  # variable diaria de Open-Meteo -> nombre de columna
     "relative_humidity_2m_max": "humedad max (%)",
     "relative_humidity_2m_min": "humedad min (%)",
 }
-# features externas (clima y mes): inválidos y outliers no las tocan
+# features externas (clima y mes) y sus derivadas (por prefijo): inválidos y outliers no las tocan
 COLS_SIN_LIMITES = [*VARS_CLIMA.values(), "mes_sin", "mes_cos"]
+# metas y cumplimiento de meta: la regla de no negativos nunca se les aplica (aunque no_negativas="all")
+PREFIJOS_NEGATIVOS_OK = ("meta", "cumpl")
+
+
+def _con_limites(columnas: pd.Index) -> pd.Index:
+    """Columnas a las que sí se les aplican inválidos/outliers."""
+    return columnas[~columnas.str.startswith(tuple(COLS_SIN_LIMITES))]
 RANDOM_STATE = 42
 
 # =============================================================================
@@ -206,16 +218,19 @@ def juntar_datasets(dfs: list[pd.DataFrame]) -> pd.DataFrame:
 
 
 def borrar_columnas_vacias(
-    df: pd.DataFrame, min_nulos: int = 1100, umbral_varianza: float = 10
+    df: pd.DataFrame, min_nulos: int = 1100, umbral_varianza: float = 10,
+    conservar: tuple[str, ...] = ("meta",),
 ) -> tuple[pd.DataFrame, list[str]]:
     """Elimina columnas con >= min_nulos nulos o con varianza <= umbral_varianza.
+    Las que empiezan con `conservar` no se borran por varianza (las metas son ratios de escala chica).
     Devuelve (df sin esas columnas, lista de columnas eliminadas)."""
     eliminar = []
     for col in df.columns:
         if col == COL_FECHA:
             continue
         nulos = df[col].isnull().sum()
-        varianza = df[col].var() if pd.api.types.is_numeric_dtype(df[col]) else None
+        es_num = pd.api.types.is_numeric_dtype(df[col]) and not str(col).startswith(conservar)
+        varianza = df[col].var() if es_num else None
         if nulos >= min_nulos or (varianza is not None and varianza <= umbral_varianza):
             eliminar.append(col)
     return df.drop(columns=eliminar), eliminar
@@ -341,6 +356,97 @@ def construir_dataset(
 
 
 # =============================================================================
+# 1b. Variables derivadas 
+# =============================================================================
+
+@dataclass
+class ConfigDerivadas:
+    cols_temporales: list[str] = field(default_factory=lambda: [
+        "frio (kw)", "planta (kw)", "temp media (°c)", "hl cerveza envasada"])
+    lags: list[int] = field(default_factory=lambda: [1, 2, 7])        # 7 = mismo día de la semana anterior
+    ventanas: list[int] = field(default_factory=lambda: [3, 7, 14])   # promedios móviles
+    ratios: list[tuple[str, str]] = field(default_factory=lambda: [
+        ("frio (kw)", "planta (kw)"), ("sala maq (kw)", "planta (kw)"),
+        ("servicios (kw)", "planta (kw)"), ("frio (kw)", "hl cerveza envasada")])
+    meta: bool = True                                                  # cumplimiento real / meta
+    interacciones: list[tuple[str, str]] = field(default_factory=lambda: [
+        ("temp max (°c)", "hl cerveza envasada"), ("temp media (°c)", "humedad media (%)"),
+        ("temp max (°c)", "frio (kw)")])
+
+
+def _sumar(df: pd.DataFrame, nuevas: dict[str, pd.Series]) -> pd.DataFrame:
+    # concat de una vez: assign columna por columna fragmenta el df (PerformanceWarning)
+    return pd.concat([df, pd.DataFrame(nuevas, index=df.index)], axis=1)
+
+
+def agregar_lags(df: pd.DataFrame, cols: list[str], lags: list[int]) -> pd.DataFrame:
+    """`{col} lag{k}` = valor de hace k días (df ordenado por fecha y sin huecos)."""
+    nuevas = {f"{c} lag{k}": df[c].shift(k) for c in cols for k in lags}
+    return _sumar(df, nuevas)
+
+
+def agregar_medias_moviles(df: pd.DataFrame, cols: list[str], ventanas: list[int]) -> pd.DataFrame:
+    """`{col} mm{v}` = promedio de los últimos v días, incluyendo el actual."""
+    nuevas = {f"{c} mm{v}": df[c].rolling(v, min_periods=1).mean() for c in cols for v in ventanas}
+    return _sumar(df, nuevas)
+
+
+def agregar_ratios(df: pd.DataFrame, pares: list[tuple[str, str]]) -> pd.DataFrame:
+    """`{a} / {b}`; denominador 0 -> NaN (no inf)."""
+    nuevas = {f"{a} / {b}": df[a] / df[b].replace(0, np.nan) for a, b in pares}
+    return _sumar(df, nuevas)
+
+
+def _clave(nombre: str) -> str:
+    return nombre.lower().replace(" ", "").removesuffix("/hl")
+
+
+def agregar_cumplimiento_meta(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """`cumpl {x}` = real / meta (1 = en meta, > 1 = consumo por encima de la meta).
+    La meta se arrastra hacia adelante (son escalones); antes de la primera meta queda NaN.
+    Devuelve (df, metas sin columna real para emparejar)."""
+    reales = {_clave(c): c for c in df.columns if c.endswith("hl") and not c.startswith("meta")}
+    nuevas, sin_par = {}, []
+    for m in [c for c in df.columns if c.startswith("meta")]:
+        real = reales.get(_clave(m.removeprefix("meta ")))
+        if real is None:
+            sin_par.append(m)
+            continue
+        meta = pd.to_numeric(df[m], errors="coerce").replace(0, np.nan).ffill()
+        nuevas[f"cumpl {real.removesuffix('/hl').removesuffix('/ hl').strip()}"] = df[real] / meta
+    return _sumar(df, nuevas), sin_par
+
+
+def agregar_interacciones(df: pd.DataFrame, pares: list[tuple[str, str]]) -> pd.DataFrame:
+    """`{a} x {b}` = producto (útil sobre todo para modelos lineales)."""
+    nuevas = {f"{a} x {b}": df[a] * df[b] for a, b in pares}
+    return _sumar(df, nuevas)
+
+
+def agregar_derivadas(df: pd.DataFrame, cfg: ConfigDerivadas | None = None, verbose: bool = False) -> pd.DataFrame:
+    """Aplica todas las variables derivadas de `cfg` (lags, medias móviles, ratios, cumplimiento de meta,
+    interacciones). Pensado para usar después de `cargar_dataset_limpio()` o `construir_dataset()`."""
+    cfg = cfg or ConfigDerivadas()
+    pedidas = {*cfg.cols_temporales, *(c for p in [*cfg.ratios, *cfg.interacciones] for c in p)}
+    if faltan := sorted(pedidas - set(df.columns)):
+        raise KeyError(f"Columnas pedidas en ConfigDerivadas que no están en el df: {faltan}")
+
+    n = df.shape[1]
+    df = df.sort_values(COL_FECHA).reset_index(drop=True)
+    df = agregar_lags(df, cfg.cols_temporales, cfg.lags or [])
+    df = agregar_medias_moviles(df, cfg.cols_temporales, cfg.ventanas or [])
+    df = agregar_ratios(df, cfg.ratios or [])
+    sin_par = []
+    if cfg.meta:
+        df, sin_par = agregar_cumplimiento_meta(df)
+    df = agregar_interacciones(df, cfg.interacciones or [])
+    if verbose:
+        print(f"Variables derivadas agregadas: {df.shape[1] - n}"
+              + (f" | metas sin columna real: {sin_par}" if sin_par else ""))
+    return df
+
+
+# =============================================================================
 # 2. Versionado
 # =============================================================================
 
@@ -365,7 +471,7 @@ def guardar_registro(entradas: list, registro: str | Path = RUTA_REGISTRO) -> No
     registro = Path(registro)
     registro.parent.mkdir(parents=True, exist_ok=True)
     with open(registro, "w", encoding="utf-8") as f:
-        json.dump(entradas, f, indent=2, ensure_ascii=False)
+        json.dump(entradas, f, indent=2, ensure_ascii=False, default=str)
 
 
 def registrar_version(
@@ -404,6 +510,60 @@ def registrar_version(
     guardar_registro(entradas, registro)
     print(f"Nueva versión registrada: {entrada['version']} ({nuevo_hash[:12]}...)")
     return entrada
+
+
+def _relativa(ruta: str | Path) -> str:
+    try:
+        return Path(ruta).resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(ruta).replace("\\", "/")
+
+
+def guardar_dataset_final(
+    pp: "Preprocess",
+    splits: dict[str, tuple[pd.DataFrame, pd.Series]],
+    script: str,
+    cfg_derivadas: "ConfigDerivadas | None" = None,
+    ruta: str | Path = RUTA_FINAL,
+    entrada: str | Path = RUTA_LIMPIO,
+) -> dict:
+    """Guarda train/val/test ya preprocesados en un CSV (columna `split`), registra su sha256
+    en checksums.json y agrega una entrada al linaje (data_lineage.json) con script, fecha,
+    transformaciones y shapes de cada X."""
+    ruta = Path(ruta)
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    final = pd.concat([X.assign(**{pp.target: y, "split": nombre}) for nombre, (X, y) in splits.items()])
+    final.reset_index().to_csv(ruta, index=False)
+
+    ahora = datetime.now().isoformat(timespec="seconds")
+    sha = huella(ruta)
+    checksums = cargar_registro(RUTA_CHECKSUMS) or {}
+    checksums[_relativa(ruta)] = {"sha256": sha, "fecha": ahora}
+    guardar_registro(checksums, RUTA_CHECKSUMS)
+
+    sha_in = huella(entrada) if Path(entrada).exists() else None
+    version_in = next((e["version"] for e in cargar_registro() if e["sha256"] == sha_in), None)
+    resumen = pp.resumen()
+    pasos = [
+        {"paso": "construir_dataset", "script": "src/preprocess.py",
+         "detalle": f"ver data/logs/data_log.json {version_in}"},
+        {"paso": "split temporal", "script": "src/preprocess.py", "config": resumen["config"]["split"]},
+        {"paso": "Preprocess", "script": "src/preprocess.py",
+         "config": {k: v for k, v in resumen["config"].items() if k != "split"}, "log": resumen["pasos"]},
+    ]
+    if cfg_derivadas is not None:
+        pasos.insert(1, {"paso": "agregar_derivadas", "script": "src/preprocess.py", "config": asdict(cfg_derivadas)})
+    registro = {
+        "fecha": ahora,
+        "script": script,
+        "input": {"archivo": _relativa(entrada), "sha256": sha_in, "version": version_in},
+        "transformaciones": pasos,
+        "shapes": {f"X_{n}": list(X.shape) for n, (X, _) in splits.items()},
+        "output": {"archivo": _relativa(ruta), "sha256": sha},
+    }
+    guardar_registro(cargar_registro(RUTA_LINEAGE) + [registro], RUTA_LINEAGE)
+    print(f"Dataset final: {_relativa(ruta)} ({sha[:12]}...) | shapes: {registro['shapes']}")
+    return registro
 
 
 # =============================================================================
@@ -447,6 +607,7 @@ class ConfigTransformer:
 class ConfigSplit:
     # tener en cuenta que la consigna pide 70% de train, 15% de validación y 15% de test
     test_size: float = 0.15
+    val_size: float = 0.15   # 0 -> sin validación
 
 
 _ESTRATEGIAS_FALTANTES = {"mean", "median", "interpolate", "knn"}
@@ -506,11 +667,13 @@ class Preprocess:
         self._log: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ split
-    def train_test_split(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def train_test_split(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """(train, val, test) cortados por fecha, en ese orden."""
         # tiene que ser por fecha porque sino vamos a predecir cualquier día
         df = df.sort_values(self.col_fecha).reset_index(drop=True)
-        corte = int(round(len(df) * (1 - self.split.test_size)))
-        return df.iloc[:corte].copy(), df.iloc[corte:].copy()
+        c_test = int(round(len(df) * (1 - self.split.test_size)))
+        c_val = int(round(len(df) * (1 - self.split.test_size - self.split.val_size)))
+        return df.iloc[:c_val].copy(), df.iloc[c_val:c_test].copy(), df.iloc[c_test:].copy()
 
     # ------------------------------------------------------------------ auxiliares
     def _features(self, df: pd.DataFrame) -> list[str]:
@@ -529,6 +692,7 @@ class Preprocess:
             no_neg = columnas[columnas.str.startswith("ee")]
         else:
             no_neg = columnas.intersection(cfg.no_negativas)
+        no_neg = no_neg[~no_neg.str.startswith(PREFIJOS_NEGATIVOS_OK)]
         lo[no_neg] = 0.0
         if cfg.max_abs is not None:
             lo, hi = lo.clip(lower=-cfg.max_abs), hi.clip(upper=cfg.max_abs)
@@ -570,7 +734,7 @@ class Preprocess:
         return X, int(fuera.to_numpy().sum())
 
     def _cols_outliers(self, X: pd.DataFrame) -> pd.Index:
-        return X.columns.difference([*self.outliers.excluir, *COLS_SIN_LIMITES], sort=False)
+        return _con_limites(X.columns).difference(self.outliers.excluir, sort=False)
 
     def _paso(self, msg: str) -> None:
         if self.verbose:
@@ -606,7 +770,7 @@ class Preprocess:
         X = train[self._features_fit].astype("float64")
 
         if self.invalidos:  # límites fijos, no dependen de los datos
-            self._lim_invalidos = self._limites_invalidos(X.columns.difference(COLS_SIN_LIMITES, sort=False))
+            self._lim_invalidos = self._limites_invalidos(_con_limites(X.columns))
             accion = "delete" if self.invalidos.accion == "delete" else "nan"
             X, n = self._aplicar_limites(X, *self._lim_invalidos, accion)
             self._paso(f"[fit] inválidos ({accion}): {n} valores, quedan {len(X)} filas")
@@ -713,11 +877,13 @@ class Preprocess:
 
     def run(self, df: pd.DataFrame):
         """Para probar todo junto
-        split -> fit en train -> transform en train y test -> (X_train, X_test, y_train, y_test)."""
-        train, test = self.train_test_split(df)
+        split -> fit en train -> transform en train, val y test
+        -> (X_train, X_val, X_test, y_train, y_val, y_test)."""
+        train, val, test = self.train_test_split(df)
         X_train, y_train = self.separar_xy(self.fit_transform(train))
+        X_val, y_val = self.separar_xy(self.transform(val, nombre="val"))
         X_test, y_test = self.separar_xy(self.transform(test, nombre="test"))
-        return X_train, X_test, y_train, y_test
+        return X_train, X_val, X_test, y_train, y_val, y_test
 
     def resumen(self):
         """Configuración usada y qué hizo cada paso en train/test."""

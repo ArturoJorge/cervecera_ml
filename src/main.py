@@ -7,17 +7,25 @@ df = cargar_dataset_limpio(RUTA_LIMPIO)
 #                       comentario="Añadí los meses de forma ciclica para que tengan la distancia apropiada, y añadí la temperatura y la humedad de cada día")
 print(df.shape)
 
+# lags, medias móviles, ratios, cumplimiento de meta e interacciones (configurables con ConfigDerivadas)
+cfg_der = ConfigDerivadas()
+df = agregar_derivadas(df, cfg_der, verbose=True)
+
 pp = Preprocess(
         invalidos=ConfigInvalidos(accion="nan"),
         outliers=ConfigOutliers(metodo="iqr", accion="nan"),
         transformer=ConfigTransformer(metodo="yeo-johnson"),
         scaler=ConfigScaler(metodo="robust"),
         faltantes=ConfigFaltantes(estrategia="knn", n_vecinos=5),  # mean | median | interpolate | knn
-        split=ConfigSplit(test_size=0.15),
+        split=ConfigSplit(test_size=0.15, val_size=0.15),  # 70/15/15 temporal
         verbose=True
     )
-X_train, X_test, y_train, y_test = pp.run(df)
+X_train, X_val, X_test, y_train, y_val, y_test = pp.run(df)
 print(pp.resumen())
+
+# data/processed/dataset_final.csv + checksum (data/logs/checksums.json) + linaje (data/logs/data_lineage.json)
+guardar_dataset_final(pp, {"train": (X_train, y_train), "val": (X_val, y_val), "test": (X_test, y_test)},
+                      script="src/main.py", cfg_derivadas=cfg_der)
 
 
 

@@ -1,10 +1,10 @@
 
 from preprocess import *
 
-# reconstruye desde los crudos: días completos + clima de Open-Meteo + mes cíclico + target
-# (para no reconstruir: df = cargar_dataset_limpio(RUTA_LIMPIO))
-df = construir_dataset(guardar=RUTA_LIMPIO, versionar=True, 
-                       comentario="Añadí los meses de forma ciclica para que tengan la distancia apropiada, y añadí la temperatura y la humedad de cada día")
+
+df = cargar_dataset_limpio(RUTA_LIMPIO)
+#df = construir_dataset(guardar=RUTA_LIMPIO, versionar=True, 
+#                       comentario="Añadí los meses de forma ciclica para que tengan la distancia apropiada, y añadí la temperatura y la humedad de cada día")
 print(df.shape)
 
 pp = Preprocess(

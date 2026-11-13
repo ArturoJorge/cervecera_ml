@@ -1,7 +1,9 @@
 """Fase 3: comparación de modelos y optimización con Optuna, con registro de experimentos.
 
 Para cada modelo se corre un estudio de Optuna (sampler TPE con semilla fija + MedianPruner):
-  - cada trial se evalúa con TimeSeriesSplit SOBRE TRAIN (etapa optuna_cv);
+  - cada trial se evalúa con TimeSeriesSplit SOBRE TRAIN (etapa optuna_cv), con folds de tamaño
+    fijo para que la ventana de entrenamiento más chica sea la mitad de train; los baselines se
+    miden en esos mismos folds como referencia;
   - después de cada fold se reporta el MAE medio acumulado y el pruner corta los trials que
     van peor que la mediana de los anteriores en ese mismo fold (estado = podado);
   - la mejor configuración se reentrena en todo train y recién ahí se mide en VALIDATION
@@ -18,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import time
 import warnings
 from datetime import datetime
@@ -48,8 +49,8 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 # =============================================================================
 # Espacio de búsqueda (se documenta acá y queda registrado en el log)
 # =============================================================================
-# Los features de dataset_final.csv ya vienen transformados y escalados, así que
-# Ridge/Lasso pueden usarse directo. Los árboles son invariantes al escalado.
+# Las features de dataset_final.csv ya vienen transformadas y escaladas (se usan directo).
+# El target NO: está en kW crudos; solo el MLP lo estandariza internamente (ver _mlp).
 
 def _mlp(**params) -> TransformedTargetRegressor:
     """Red neuronal (MLP) con el target estandarizado.
@@ -65,7 +66,7 @@ _CAPAS_MLP = {"32": (32,), "64": (64,), "64-32": (64, 32), "128-64": (128, 64)}
 
 
 def _espacio_ridge(t: optuna.Trial) -> dict:
-    return {"alpha": t.suggest_float("alpha", 1e-2, 1e3, log=True)}
+    return {"alpha": t.suggest_float("alpha", 1e-2, 1e4, log=True)}
 
 
 def _espacio_lasso(t: optuna.Trial) -> dict:
@@ -136,33 +137,10 @@ def cargar_datos(ruta: str | Path = RUTA_FINAL, incluir_test: bool = False) -> p
     return df
 
 
-_CARACTERES_PROHIBIDOS = re.compile(r'[\[\]{}<>",:]')
-
-
-def nombres_seguros(columnas) -> list[str]:
-    """Nombres de columna aceptados por todos los modelos.
-
-    XGBoost rechaza  [ ] <  en los nombres de features (p. ej. 'tot l3, l4 y planta de co2');
-    se reemplazan esos y otros caracteres problemáticos por '_' y, si dos nombres quedan
-    iguales, se desambiguan con un sufijo. Es determinista: predict.py debe aplicar esta misma
-    función a las columnas del preprocesamiento para que coincidan con las del entrenamiento."""
-    vistos: dict[str, int] = {}
-    salida = []
-    for c in columnas:
-        n = _CARACTERES_PROHIBIDOS.sub("_", str(c))
-        k = vistos.get(n, 0)
-        vistos[n] = k + 1
-        salida.append(n if k == 0 else f"{n}__{k}")
-    return salida
-
-
 def particion(df: pd.DataFrame, split: str) -> tuple[pd.DataFrame, pd.Series]:
-    """(X, y) de un split. Features = todo menos el target y la columna `split`.
-    Los nombres de columna pasan por nombres_seguros()."""
+    """(X, y) de un split. Features = todo menos el target y la columna `split`."""
     d = df[df["split"] == split]
-    X = d.drop(columns=[TARGET, "split"])
-    X.columns = nombres_seguros(X.columns)
-    return X, d[TARGET]
+    return d.drop(columns=[TARGET, "split"]), d[TARGET]
 
 
 def _metricas(y, pred) -> dict:
@@ -205,7 +183,7 @@ COLUMNAS_LOG = [
     "etapa",             # baseline | optuna_cv | optuna_val
     "estado",            # completo | podado (trial de Optuna cortado por el pruner)
     "hiperparametros",
-    "mae_cv", "std_cv", "n_folds",             # solo optuna_cv (TimeSeriesSplit sobre train)
+    "mae_cv", "std_cv", "n_folds",             # optuna_cv y baseline (TimeSeriesSplit sobre train)
     "mae_val", "rmse_val", "r2_val", "mae_train",
     "seg_entrenamiento", "n_features", "n_train", "n_val", "semilla", "dataset_sha256",
 ]
@@ -284,7 +262,9 @@ def comparar_modelos(
     X_va, y_va = particion(df, "val")
     sha = huella(ruta_datos)[:12]
     corrida = datetime.now().isoformat(timespec="seconds")
-    cv = TimeSeriesSplit(n_splits=n_splits)
+    # test_size fijo: la ventana de entrenamiento más chica es la mitad de train. Con el default
+    # el 1.er fold entrenaba con ~143 filas y 390 features y dominaba el MAE medio del CV.
+    cv = TimeSeriesSplit(n_splits=n_splits, test_size=len(X_tr) // (2 * n_splits))
     filas = []
 
     def base_fila(modelo: str, etapa: str, estado: str, params: dict, seg: float) -> dict:
@@ -297,22 +277,28 @@ def comparar_modelos(
             "semilla": SEMILLA, "dataset_sha256": sha,
         }
 
-    def anotar_val(modelo: str, etapa: str, params: dict, m_val: dict, mae_train: float, seg: float) -> None:
+    def anotar_val(modelo: str, etapa: str, params: dict, m_val: dict, mae_train: float, seg: float,
+                   extra: dict | None = None) -> None:
         # redondeo: con n_jobs=-1 el orden de suma de los árboles cambia el decimal 13
         # (ruido de punto flotante); a 6 decimales dos corridas dan exactamente lo mismo
         fila = {**base_fila(modelo, etapa, "completo", params, seg),
                 "mae_val": round(m_val["mae"], 6), "rmse_val": round(m_val["rmse"], 6),
-                "r2_val": round(m_val["r2"], 6), "mae_train": round(mae_train, 6)}
+                "r2_val": round(m_val["r2"], 6), "mae_train": round(mae_train, 6), **(extra or {})}
         registrar_experimento(fila, ruta_logs)
         filas.append(fila)
 
-    # --- baselines (mismas filas, mismo conjunto que los modelos)
+    # --- baselines (mismas filas, mismo conjunto que los modelos). También se miden en los
+    # mismos folds del CV: es la referencia para saber si un modelo le gana a la persistencia en CV.
     base = predicciones_baselines(df)
     for nombre in base:
+        pred_tr = base.loc[X_tr.index, nombre]
+        maes = [_metricas(y_tr.iloc[e], pred_tr.iloc[e])["mae"] for _, e in cv.split(X_tr)]
+        cv_ref = {"mae_cv": round(float(np.mean(maes)), 6), "std_cv": round(float(np.std(maes)), 6),
+                  "n_folds": len(maes)}
         anotar_val(nombre, "baseline", {}, _metricas(y_va, base.loc[X_va.index, nombre]),
-                   _metricas(y_tr, base.loc[X_tr.index, nombre])["mae"], 0.0)
+                   _metricas(y_tr, pred_tr)["mae"], 0.0, cv_ref)
         if verbose:
-            print(f"{nombre:26s} MAE val = {filas[-1]['mae_val']:.1f}")
+            print(f"{nombre:26s} MAE cv = {cv_ref['mae_cv']:.1f}  MAE val = {filas[-1]['mae_val']:.1f}")
 
     # --- modelos
     for nombre in modelos:
@@ -357,7 +343,7 @@ def resumen(resultados: pd.DataFrame) -> pd.DataFrame:
     """Modelo final de cada estudio (y cada baseline), ordenado por MAE de validación."""
     finales = resultados[resultados["etapa"].isin(["baseline", "optuna_val"])]
     mejores = finales.loc[finales.groupby("modelo")["mae_val"].idxmin()]
-    cv = (resultados[resultados["etapa"] == "optuna_cv"]
+    cv = (resultados[resultados["etapa"].isin(["optuna_cv", "baseline"])]
           .groupby("modelo")["mae_cv"].min().rename("mae_cv"))
     return (mejores.drop(columns="mae_cv", errors="ignore").join(cv, on="modelo")
             .sort_values("mae_val")
@@ -368,7 +354,8 @@ def resumen(resultados: pd.DataFrame) -> pd.DataFrame:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--n-trials", type=int, default=50, help="trials de Optuna por modelo (default 50)")
-    ap.add_argument("--n-splits", type=int, default=5, help="folds de TimeSeriesSplit sobre train (default 5)")
+    ap.add_argument("--n-splits", type=int, default=5, help="folds de TimeSeriesSplit sobre train (default 5); cada fold de evaluación "
+                         "mide len(train) // (2 * n_splits) días")
     ap.add_argument("--modelos", type=str, default=None,
                     help=f"lista separada por comas (default: todos = {','.join(ESPACIOS)})")
     ap.add_argument("--timeout", type=float, default=None, help="segundos máximos por estudio")

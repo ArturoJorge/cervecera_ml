@@ -1,5 +1,9 @@
 # cervecera_ml
-Proyecto de ML para Laboratorio de Datos II.
+Proyecto final para Laboratorio de Datos II.
+## Grupo
+- **Detzel Kolman** Axel Nicolas
+- **Carrara** Ignacio
+- **Jorge** Arturo
 
 ## Objetivo
 Desarrollar un pipeline de machine learning completo y reproducible para predecir el consumo energético del sistema de refrigeración **Frío (kW) del día siguiente** en una planta cervecera mexicana. Además de la precisión del modelo, el proyecto evalúa la aplicación de buenas prácticas de MLOps para garantizar la trazabilidad, la colaboración y la gestión del ciclo de vida del proyecto.
@@ -18,7 +22,7 @@ notebooks/
 ## Cómo ejecutarlo
 1. **Clonar el repositorio**
    ```bash
-   git clone <url-del-repo>
+   git clone https://github.com/ArturoJorge/cervecera_ml.git
    cd cervecera_ml
    ```
 2. **Crear el entorno e instalar dependencias** (Python 3.11 o superior)

@@ -1,0 +1,573 @@
+[
+  {
+    "fecha": "2026-11-12T20:45:26",
+    "script": "src/main.py",
+    "input": {
+      "archivo": "data/clean/df_total.xlsx",
+      "sha256": "4ed41d05f74122de26ce1056c0d6ce427edc9f5830624ee6af9341b00d4d30ce",
+      "version": 0
+    },
+    "transformaciones": [
+      {
+        "paso": "construir_dataset",
+        "script": "src/preprocess.py",
+        "detalle": "ver data/logs/data_log.json None"
+      },
+      {
+        "paso": "agregar_derivadas",
+        "script": "src/preprocess.py",
+        "config": {
+          "cols_temporales": [
+            "frio (kw)",
+            "planta (kw)",
+            "temp media (°c)",
+            "hl cerveza envasada"
+          ],
+          "lags": [
+            1,
+            2,
+            7
+          ],
+          "ventanas": [
+            3,
+            7,
+            14
+          ],
+          "ratios": [
+            [
+              "frio (kw)",
+              "planta (kw)"
+            ],
+            [
+              "sala maq (kw)",
+              "planta (kw)"
+            ],
+            [
+              "servicios (kw)",
+              "planta (kw)"
+            ],
+            [
+              "frio (kw)",
+              "hl cerveza envasada"
+            ]
+          ],
+          "meta": true,
+          "interacciones": [
+            [
+              "temp max (°c)",
+              "hl cerveza envasada"
+            ],
+            [
+              "temp media (°c)",
+              "humedad media (%)"
+            ],
+            [
+              "temp max (°c)",
+              "frio (kw)"
+            ]
+          ]
+        }
+      },
+      {
+        "paso": "split temporal",
+        "script": "src/preprocess.py",
+        "config": {
+          "test_size": 0.15,
+          "val_size": 0.15
+        }
+      },
+      {
+        "paso": "Preprocess",
+        "script": "src/preprocess.py",
+        "config": {
+          "invalidos": {
+            "no_negativas": "ee",
+            "max_abs": 1000000,
+            "rangos": {},
+            "accion": "nan"
+          },
+          "outliers": {
+            "metodo": "iqr",
+            "accion": "nan",
+            "k_iqr": 1.5,
+            "umbral_zmod": 3.5,
+            "percentiles": [
+              0.01,
+              0.99
+            ],
+            "excluir": []
+          },
+          "faltantes": {
+            "estrategia": "knn",
+            "n_vecinos": 5,
+            "max_frac_nulos_col": null
+          },
+          "transformer": {
+            "metodo": "yeo-johnson"
+          },
+          "scaler": {
+            "metodo": "robust"
+          }
+        },
+        "log": {
+          "train": {
+            "filas_inicio": 848,
+            "invalidos_valores": 125,
+            "outliers_valores": 13334,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 59211,
+            "filas_fin": 848
+          },
+          "val": {
+            "filas_inicio": 182,
+            "invalidos_valores": 12,
+            "outliers_valores": 6035,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 9358,
+            "filas_fin": 182
+          },
+          "test": {
+            "filas_inicio": 182,
+            "invalidos_valores": 9,
+            "outliers_valores": 5457,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 8299,
+            "filas_fin": 181
+          }
+        }
+      }
+    ],
+    "shapes": {
+      "X_train": [
+        848,
+        390
+      ],
+      "X_val": [
+        182,
+        390
+      ],
+      "X_test": [
+        181,
+        390
+      ]
+    },
+    "output": {
+      "archivo": "data/processed/dataset_final.csv",
+      "sha256": "bf75aafb0ec591fa04b0a5c004e03f9b986359bdc706bcb21ceb21ee4afc0fcf"
+    }
+  },
+  {
+    "fecha": "2026-11-12T20:45:44",
+    "script": "src/main.py",
+    "input": {
+      "archivo": "data/clean/df_total.xlsx",
+      "sha256": "4ed41d05f74122de26ce1056c0d6ce427edc9f5830624ee6af9341b00d4d30ce",
+      "version": 1
+    },
+    "transformaciones": [
+      {
+        "paso": "construir_dataset",
+        "script": "src/preprocess.py",
+        "detalle": "ver data/logs/data_log.json None"
+      },
+      {
+        "paso": "agregar_derivadas",
+        "script": "src/preprocess.py",
+        "config": {
+          "cols_temporales": [
+            "frio (kw)",
+            "planta (kw)",
+            "temp media (°c)",
+            "hl cerveza envasada"
+          ],
+          "lags": [
+            1,
+            2,
+            7
+          ],
+          "ventanas": [
+            3,
+            7,
+            14
+          ],
+          "ratios": [
+            [
+              "frio (kw)",
+              "planta (kw)"
+            ],
+            [
+              "sala maq (kw)",
+              "planta (kw)"
+            ],
+            [
+              "servicios (kw)",
+              "planta (kw)"
+            ],
+            [
+              "frio (kw)",
+              "hl cerveza envasada"
+            ]
+          ],
+          "meta": true,
+          "interacciones": [
+            [
+              "temp max (°c)",
+              "hl cerveza envasada"
+            ],
+            [
+              "temp media (°c)",
+              "humedad media (%)"
+            ],
+            [
+              "temp max (°c)",
+              "frio (kw)"
+            ]
+          ]
+        }
+      },
+      {
+        "paso": "split temporal",
+        "script": "src/preprocess.py",
+        "config": {
+          "test_size": 0.15,
+          "val_size": 0.15
+        }
+      },
+      {
+        "paso": "Preprocess",
+        "script": "src/preprocess.py",
+        "config": {
+          "invalidos": {
+            "no_negativas": "ee",
+            "max_abs": 1000000,
+            "rangos": {},
+            "accion": "nan"
+          },
+          "outliers": {
+            "metodo": "iqr",
+            "accion": "nan",
+            "k_iqr": 1.5,
+            "umbral_zmod": 3.5,
+            "percentiles": [
+              0.01,
+              0.99
+            ],
+            "excluir": []
+          },
+          "faltantes": {
+            "estrategia": "knn",
+            "n_vecinos": 5,
+            "max_frac_nulos_col": null
+          },
+          "transformer": {
+            "metodo": "yeo-johnson"
+          },
+          "scaler": {
+            "metodo": "robust"
+          }
+        },
+        "log": {
+          "train": {
+            "filas_inicio": 848,
+            "invalidos_valores": 125,
+            "outliers_valores": 13334,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 59211,
+            "filas_fin": 848
+          },
+          "val": {
+            "filas_inicio": 182,
+            "invalidos_valores": 12,
+            "outliers_valores": 6035,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 9358,
+            "filas_fin": 182
+          },
+          "test": {
+            "filas_inicio": 182,
+            "invalidos_valores": 9,
+            "outliers_valores": 5457,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 8299,
+            "filas_fin": 181
+          }
+        }
+      }
+    ],
+    "shapes": {
+      "X_train": [
+        848,
+        390
+      ],
+      "X_val": [
+        182,
+        390
+      ],
+      "X_test": [
+        181,
+        390
+      ]
+    },
+    "output": {
+      "archivo": "data/processed/dataset_final.csv",
+      "sha256": "bf75aafb0ec591fa04b0a5c004e03f9b986359bdc706bcb21ceb21ee4afc0fcf"
+    }
+  },
+  {
+    "fecha": "2026-11-12T21:17:24",
+    "script": "src/main.py",
+    "input": {
+      "archivo": "data/clean/df_total.xlsx",
+      "sha256": "e33516c7836fa501051f103abdf09d9ece002e659d3abed578de7968bbdc578d",
+      "version": 2
+    },
+    "transformaciones": [
+      {
+        "paso": "construir_dataset",
+        "script": "src/preprocess.py",
+        "detalle": "ver data/logs/data_log.json None"
+      },
+      {
+        "paso": "agregar_derivadas",
+        "script": "src/preprocess.py",
+        "config": {
+          "cols_temporales": [
+            "frio (kw)",
+            "planta (kw)",
+            "temp media (°c)",
+            "hl cerveza envasada"
+          ],
+          "lags": [
+            1,
+            2,
+            7
+          ],
+          "ventanas": [
+            3,
+            7,
+            14
+          ],
+          "ratios": [
+            [
+              "frio (kw)",
+              "planta (kw)"
+            ],
+            [
+              "sala maq (kw)",
+              "planta (kw)"
+            ],
+            [
+              "servicios (kw)",
+              "planta (kw)"
+            ],
+            [
+              "frio (kw)",
+              "hl cerveza envasada"
+            ]
+          ],
+          "meta": true,
+          "interacciones": [
+            [
+              "temp max (°c)",
+              "hl cerveza envasada"
+            ],
+            [
+              "temp media (°c)",
+              "humedad media (%)"
+            ],
+            [
+              "temp max (°c)",
+              "frio (kw)"
+            ]
+          ]
+        }
+      },
+      {
+        "paso": "split temporal",
+        "script": "src/preprocess.py",
+        "config": {
+          "test_size": 0.15,
+          "val_size": 0.15
+        }
+      },
+      {
+        "paso": "Preprocess",
+        "script": "src/preprocess.py",
+        "config": {
+          "invalidos": {
+            "no_negativas": "ee",
+            "max_abs": 1000000,
+            "rangos": {},
+            "accion": "nan"
+          },
+          "outliers": {
+            "metodo": "iqr",
+            "accion": "nan",
+            "k_iqr": 1.5,
+            "umbral_zmod": 3.5,
+            "percentiles": [
+              0.01,
+              0.99
+            ],
+            "excluir": []
+          },
+          "faltantes": {
+            "estrategia": "knn",
+            "n_vecinos": 5,
+            "max_frac_nulos_col": null
+          },
+          "transformer": {
+            "metodo": "yeo-johnson"
+          },
+          "scaler": {
+            "metodo": "robust"
+          }
+        },
+        "log": {
+          "train": {
+            "filas_inicio": 848,
+            "invalidos_valores": 125,
+            "outliers_valores": 13334,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 59211,
+            "filas_fin": 848
+          },
+          "val": {
+            "filas_inicio": 182,
+            "invalidos_valores": 12,
+            "outliers_valores": 6035,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 9358,
+            "filas_fin": 182
+          },
+          "test": {
+            "filas_inicio": 182,
+            "invalidos_valores": 9,
+            "outliers_valores": 5457,
+            "transformer": "yeo-johnson",
+            "scaler": "robust",
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 8299,
+            "filas_fin": 181
+          }
+        }
+      },
+      {
+        "paso": "seleccion de variables",
+        "script": "src/preprocess.py",
+        "config": {
+          "filtro": {
+            "metodo": "f_regression",
+            "k": 60
+          },
+          "wrapper": {
+            "metodo": "lasso",
+            "alpha": 0.01,
+            "n_features": 20,
+            "estimador": "ridge"
+          }
+        },
+        "columnas": {
+          "inicio": 390,
+          "filtro": 60,
+          "final": 59
+        },
+        "seleccionadas": [
+          "frio (kw)",
+          "sala maq (kw)",
+          "frio (kw) mm7",
+          "frio (kw) mm14",
+          "frio (kw) mm3",
+          "servicios (kw)",
+          "planta (kw) mm14",
+          "planta (kw) mm7",
+          "kw gral planta",
+          "planta (kw)",
+          "temp max (°c) x frio (kw)",
+          "planta (kw) mm3",
+          "frio (kw) lag1",
+          "mes_cos",
+          "kw trafo 11",
+          "frio (kw) lag2",
+          "frio (kw) lag7",
+          "agua planta (hl)",
+          "kw cond 5. 6 y 9",
+          "planta de agua (hl)",
+          "planta (kw) lag7",
+          "hl cerveza envasada mm14",
+          "planta (kw) lag1",
+          "produccion (hl)",
+          "meta et planta",
+          "meta et elab",
+          "meta et linea 3",
+          "meta et linea 2",
+          "meta et bodega",
+          "meta et servicios",
+          "meta et linea 4",
+          "meta et cocina",
+          "meta et linea 5",
+          "planta (kw) lag2",
+          "cumpl et servicios",
+          "hl cerveza envasada mm7",
+          "temp tq intermedio",
+          "et bodega/hl",
+          "cumpl et bodega",
+          "et servicios / hl",
+          "tot l3, l4 y planta de co2",
+          "kw mycom 7",
+          "temp max (°c) x hl cerveza envasada",
+          "kw mycom 2",
+          "kw trafo 10",
+          "kw compresores aire",
+          "aire producido (m3)",
+          "totalizador sistema kaeser",
+          "aire (kw)",
+          "elaboracion (kw)",
+          "hl producido bodega",
+          "kw trafo 9",
+          "fc centec ii",
+          "bodega (kw)",
+          "pta agua / eflu (kw)",
+          "tot l3. l4 y planta de co2",
+          "frio (kw) / planta (kw)",
+          "kw secador kaeser",
+          "temp media (°c) mm7"
+        ]
+      }
+    ],
+    "shapes": {
+      "X_train": [
+        848,
+        59
+      ],
+      "X_val": [
+        182,
+        59
+      ],
+      "X_test": [
+        181,
+        59
+      ]
+    },
+    "output": {
+      "archivo": "data/processed/dataset_final.csv",
+      "sha256": "a48d812204ab6d687872c15eb8cabe98209e5913eb63b17c444fb1d181ee7688"
+    }
+  }
+]

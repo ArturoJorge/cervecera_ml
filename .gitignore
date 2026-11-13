@@ -1,7 +1,13 @@
 .env
 .venv/
-.vgit statusenv
+venv/
 __pycache__/
 .vscode/
-raw/
-clean/
+
+# Datos pesados (data_log.json sí se versiona)
+data/raw/
+data/clean/
+*.xlsx
+*.xls
+*.csv
+*.parquet

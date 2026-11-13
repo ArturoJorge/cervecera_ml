@@ -7,6 +7,7 @@ __pycache__/
 # Datos pesados (data_log.json sí se versiona)
 data/raw/
 data/clean/
+# ojo con estos porque no trackeamos ningún excel ni csv
 *.xlsx
 *.xls
 *.csv

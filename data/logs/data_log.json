@@ -59,5 +59,27 @@
       "Definimos quedarnos con la media como método para juntar los datos de conglomerado KPI"
     ],
     "comments": "Elegimos esa porque fue la que nos agrego la mayor cantidad de variables con una alta correlación con la objetivo"
+  },
+  {
+    "version": "v6",
+    "created_at": "2026-11-12",
+    "output": "data/clean/df_total.xlsx",
+    "sha256": "4297ac5f4f8edc18af3e0ef749c3558d51bf5be0624e371bc7706f39fd7ba232",
+    "parent_sha256": "18830c0640cd0d073e506fc15e4b8e101819fb24d4dc153df031941a6d8037a3",
+    "transformations": [
+      "construir_dataset con crit_kpi='mean'"
+    ],
+    "comments": "Añadí los meses de forma ciclica para que tengan la distancia apropiada, y añadí la temperatura y la humedad de cada día"
+  },
+  {
+    "version": "v7",
+    "created_at": "2026-11-12",
+    "output": "data/clean/df_total.xlsx",
+    "sha256": "a043c7aba6d1bdb4295e293392ffaf015df8843297b3d802ab6e8388e5e3d481",
+    "parent_sha256": "4297ac5f4f8edc18af3e0ef749c3558d51bf5be0624e371bc7706f39fd7ba232",
+    "transformations": [
+      "construir_dataset con crit_kpi='mean'"
+    ],
+    "comments": "Se conservan las columnas meta (borrar_columnas_vacias ya no las borra por varianza) para calcular el cumplimiento de meta en agregar_derivadas"
   }
 ]

@@ -11,3 +11,11 @@ data/clean/
 *.xls
 *.csv
 *.parquet
+.venv
+__pycache__/
+.vscode/
+
+
+.claude
+graphify-out/
+CLAUDE.md

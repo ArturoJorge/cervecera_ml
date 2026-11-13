@@ -331,7 +331,7 @@
     "input": {
       "archivo": "data/clean/df_total.xlsx",
       "sha256": "e33516c7836fa501051f103abdf09d9ece002e659d3abed578de7968bbdc578d",
-      "version": null
+      "version": 2
     },
     "transformaciones": [
       {

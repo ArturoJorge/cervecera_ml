@@ -1,37 +1,3 @@
-"""Preprocesamiento del dataset de la cervecera.
-
-Contiene:
-1. Construcción del dataset limpio a partir de los .xlsx crudos (mismos pasos que Eda),
-   o carga directa del dataset ya limpio.
-2. Versionado del dataset en data/logs/data_log.json.
-3. La clase `Preprocess`, configurable, para: train/test split, datos inválidos,
-   valores faltantes y outliers.
-
-Ejemplo de uso
---------------
-    from src.preprocess import *
-
-    df = cargar_dataset_limpio()
-    # o reconstruirlo desde los crudos:
-    # df = construir_dataset(crit_kpi="mean", guardar=RUTA_LIMPIO, versionar=True,
-    #                        transformaciones=["..."], comentario="...")
-
-    pp = Preprocess(
-        invalidos=ConfigInvalidos(accion="nan"),
-        outliers=ConfigOutliers(metodo="zscore_mod", accion="clip"),
-        faltantes=ConfigFaltantes(estrategia="knn", n_vecinos=5),  # mean | median | interpolate | knn
-        split=ConfigSplit(test_size=0.15, val_size=0.15),
-    )
-    X_train, X_val, X_test, y_train, y_val, y_test = pp.run(df)
-    print(pp.resumen())
-    guardar_dataset_final(pp, {"train": (X_train, y_train), "val": (X_val, y_val),
-                               "test": (X_test, y_test)}, script="src/main.py")
-
-Para procesar un solo .xlsx:
-    df_uno = procesar_excel("data/raw/Totalizadores Planta 2020_2022.xlsx")
-    df = juntar_datasets([df_uno])   # mismo formato que con varios archivos
-"""
-
 from __future__ import annotations
 
 import hashlib

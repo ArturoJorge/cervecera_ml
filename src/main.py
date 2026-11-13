@@ -23,9 +23,18 @@ pp = Preprocess(
 X_train, X_val, X_test, y_train, y_val, y_test = pp.run(df)
 print(pp.resumen())
 
+# selección de variables: config elegida con el estudio de Optuna de preprocesamiento.ipynb (sección 12)
+sel = SeleccionVariables(
+        filtro=ConfigFiltro(metodo="f_regression", k=60),      # pearson | spearman | f_regression | mutual_info
+        wrapper=ConfigWrapper(metodo="lasso", alpha=0.01),     # lasso | rfe | forward | backward
+        verbose=True
+    )
+X_train = sel.fit_transform(X_train, y_train)
+X_val, X_test = sel.transform(X_val), sel.transform(X_test)
+
 # data/processed/dataset_final.csv + checksum (data/logs/checksums.json) + linaje (data/logs/data_lineage.json)
 guardar_dataset_final(pp, {"train": (X_train, y_train), "val": (X_val, y_val), "test": (X_test, y_test)},
-                      script="src/main.py", cfg_derivadas=cfg_der)
+                      script="src/main.py", cfg_derivadas=cfg_der, seleccion=sel)
 
 
 

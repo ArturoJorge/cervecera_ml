@@ -346,7 +346,7 @@ def entrenar(modelo: str = MODELO, version: str | None = VERSION, datos: str = "
     if guardar:
         carpeta = Path(carpeta)
         carpeta.mkdir(parents=True, exist_ok=True)
-        nombre = f"pipeline_{modelo}_{version}_{datos.replace('+', '-')}"
+        nombre = f"{modelo}_{version}_{datos.replace('+', '-')}"
         ruta = carpeta / f"{nombre}.joblib"
         joblib.dump(pipe, ruta, compress=3)
         meta["archivo"] = ruta.relative_to(ROOT).as_posix() if ruta.is_relative_to(ROOT) else str(ruta)

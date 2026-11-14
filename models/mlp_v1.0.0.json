@@ -1,7 +1,7 @@
 {
   "modelo": "mlp",
   "version": "v0.1.0",
-  "fecha": "2026-11-14T15:15:18",
+  "fecha": "2026-11-14T15:36:14",
   "entrenado_con": {
     "datos": "train+val",
     "n_filas": 1030,
@@ -25,7 +25,7 @@
     "rmse_train": 3726.166861153193,
     "r2_train": 0.7861100717697216
   },
-  "seg_entrenamiento": 5.7,
+  "seg_entrenamiento": 5.4,
   "n_features": 26,
   "columnas": [
     "frio (kw)",
@@ -62,7 +62,7 @@
     "pandas": "3.0.6",
     "joblib": "1.6.0"
   },
-  "archivo": "models/pipeline_mlp_v0.1.0_train-val.joblib",
-  "sha256": "a1d78adc8129e3f5949980d126396fed06fd6548d3e1ca013499fab1bde41a31",
-  "cargar_con": "sys.path.insert(0, 'src'); joblib.load('models/pipeline_mlp_v0.1.0_train-val.joblib').predecir_manana(df)"
+  "archivo": "models/mlp_v1.0.0_train-val.joblib",
+  "sha256": "fadfffe56ed7dee13d465dfaa717a9d243ca38c80d9c4d93909c563771f525d5",
+  "cargar_con": "sys.path.insert(0, 'src'); joblib.load('models/mlp_v1.0.0_train-val.joblib').predecir_manana(df)"
 }

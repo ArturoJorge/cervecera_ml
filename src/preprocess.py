@@ -36,6 +36,14 @@ RAW_DEFAULT = [
 COL_FECHA = "fecha"
 TARGET = "frio_mañana (kw)"
 HOJA_KPI = "Consolidado KPI"
+HOJA_LIMPIO = "Sheet1"  # hoja de data/clean/df_total.xlsx
+# Hojas de datos de los Excel de planta. Si una columna está en dos hojas, vale la de la que está antes en esta lista.
+HOJAS_DATOS = [
+    "Consolidado KPI", "Consolidado Produccion", "Totalizadores Produccion", "Consolidado EE",
+    "Totalizadores Energia", "Consolidado Agua", "Totalizadores Agua", "Consolidado GasVapor",
+    "Totalizadores Gas y Vapor", "Consolidado Aire", "Totalizadores Aire", "Totalizadores CO2",
+    "Totalizadores Efluentes", "Totalizadores Glicol",
+]
 CRITERIOS_KPI = {"sum", "mean", "median"}
 REGISTROS_DIA = 25  # 24 registros horarios + el cierre; con menos el día está incompleto
 
@@ -67,9 +75,14 @@ RANDOM_STATE = 42
 # 1. Carga / construcción del dataset
 # =============================================================================
 
-def cargar_dataset_limpio(ruta: str | Path = RUTA_LIMPIO) -> pd.DataFrame:
-    """Lee el dataset ya limpio (data/clean/df_total.xlsx)."""
-    df = pd.read_excel(ruta)
+def cargar_dataset_limpio(ruta: str | Path = RUTA_LIMPIO, hoja: str = HOJA_LIMPIO) -> pd.DataFrame:
+    """Lee el dataset ya limpio (data/clean/df_total.xlsx). La hoja se busca por nombre."""
+    with pd.ExcelFile(ruta) as libro:
+        if hoja not in libro.sheet_names:
+            raise ValueError(f"{ruta}: no tiene la hoja {hoja!r} (hojas del archivo: {libro.sheet_names})")
+        df = libro.parse(hoja)
+    if COL_FECHA not in df.columns:
+        raise ValueError(f"{ruta}: la hoja {hoja!r} no tiene la columna {COL_FECHA!r}")
     df[COL_FECHA] = pd.to_datetime(df[COL_FECHA])
     return df
 
@@ -168,11 +181,35 @@ def unir_hojas(hojas: dict[str, pd.DataFrame], verbose: bool = False) -> pd.Data
     return reduce(lambda a, b: a.combine_first(b), partes)
 
 
-def procesar_excel(ruta: str | Path, crit_kpi: str = "mean", verbose: bool = False) -> pd.DataFrame:
-    """Procesa UN .xlsx crudo (todas sus hojas). Devuelve un df indexado por `fecha`."""
-    hojas = pd.read_excel(ruta, sheet_name=None)
-    hojas = juntar_kpi(hojas, crit=crit_kpi)
-    return unir_hojas(hojas, verbose=verbose)
+def _clave_hoja(nombre) -> str:
+    return str(nombre).strip().lower()
+
+
+def leer_hojas(ruta: str | Path, hojas: list[str] | None = None) -> dict[str, pd.DataFrame]:
+    """Hojas de un .xlsx crudo. hojas=None -> todas, en el orden del archivo. Con una lista, solo esas:
+    se buscan por nombre (sin mirar mayúsculas ni espacios), quedan en el orden de la lista y el resto
+    del archivo se ignora. Falla si no hay ninguna o si a alguna le faltan `dia` u `hora`."""
+    with pd.ExcelFile(ruta) as libro:
+        if hojas is None:
+            leidas = {n: libro.parse(n) for n in libro.sheet_names}
+        else:
+            en_archivo = {_clave_hoja(n): n for n in libro.sheet_names}
+            leidas = {h: libro.parse(en_archivo[_clave_hoja(h)]) for h in hojas if _clave_hoja(h) in en_archivo}
+            if not leidas:
+                raise ValueError(f"{ruta}: no tiene ninguna de las hojas esperadas {list(hojas)} "
+                                 f"(hojas del archivo: {libro.sheet_names})")
+    for nombre, df in leidas.items():
+        columnas = {str(c).strip().lower() for c in df.columns}
+        if faltan := [c for c in ("dia", "hora") if c not in columnas]:
+            raise ValueError(f"{ruta}: a la hoja {nombre!r} le faltan las columnas {faltan}")
+    return leidas
+
+
+def procesar_excel(ruta: str | Path, crit_kpi: str = "mean", verbose: bool = False,
+                   hojas: list[str] | None = None) -> pd.DataFrame:
+    """Procesa UN .xlsx crudo (todas sus hojas, o solo `hojas`). Devuelve un df indexado por `fecha`."""
+    leidas = juntar_kpi(leer_hojas(ruta, hojas), crit=crit_kpi)
+    return unir_hojas(leidas, verbose=verbose)
 
 
 def juntar_datasets(dfs: list[pd.DataFrame]) -> pd.DataFrame:
@@ -233,10 +270,11 @@ def descargar_clima(inicio, fin, ruta_cache: str | Path = RUTA_CLIMA) -> pd.Data
     si no, lo baja de Open-Meteo y actualiza la caché."""
     inicio, fin = pd.Timestamp(inicio).normalize(), pd.Timestamp(fin).normalize()
     ruta_cache = Path(ruta_cache)
+    cache = None
     if ruta_cache.exists():
-        clima = pd.read_csv(ruta_cache, parse_dates=[COL_FECHA])
-        if clima[COL_FECHA].min() <= inicio and clima[COL_FECHA].max() >= fin:
-            return clima[clima[COL_FECHA].between(inicio, fin)].reset_index(drop=True)
+        cache = pd.read_csv(ruta_cache, parse_dates=[COL_FECHA])
+        if cache[COL_FECHA].min() <= inicio and cache[COL_FECHA].max() >= fin:
+            return cache[cache[COL_FECHA].between(inicio, fin)].reset_index(drop=True)
 
     resp = requests.get(URL_OPEN_METEO, timeout=60, params={
         "latitude": LAT_PLANTA, "longitude": LON_PLANTA, "timezone": TZ_PLANTA,
@@ -247,7 +285,9 @@ def descargar_clima(inicio, fin, ruta_cache: str | Path = RUTA_CLIMA) -> pd.Data
     clima = pd.DataFrame(resp.json()["daily"]).rename(columns={"time": COL_FECHA, **VARS_CLIMA})
     clima[COL_FECHA] = pd.to_datetime(clima[COL_FECHA])
     ruta_cache.parent.mkdir(parents=True, exist_ok=True)
-    clima.to_csv(ruta_cache, index=False)
+    if cache is not None:  # se suma a lo que ya había: no se pierde el rango anterior
+        cache = pd.concat([cache, clima]).drop_duplicates(COL_FECHA, keep="last").sort_values(COL_FECHA)
+    (clima if cache is None else cache).to_csv(ruta_cache, index=False)
     return clima
 
 
@@ -311,7 +351,7 @@ def construir_dataset(
         print(f"Dataset construido: {df.shape} | columnas eliminadas: {len(eliminadas)}")
     if guardar is not None:
         Path(guardar).parent.mkdir(parents=True, exist_ok=True)
-        df.to_excel(guardar, index=False)
+        df.to_excel(guardar, index=False, sheet_name=HOJA_LIMPIO)
     if versionar:
         if guardar is None:
             raise ValueError("Para versionar hay que pasar `guardar` (se versiona el archivo escrito)")

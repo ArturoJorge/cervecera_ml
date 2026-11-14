@@ -9,19 +9,23 @@ Cadena de configuración (nada está escrito a mano acá):
     agregar_derivadas -> Preprocess (inválidos, outliers, faltantes) -> construir_pipeline (scaler, selección, modelo)
 
 Uso:
-    python src/train_model.py                      # MLP v0.1.0 entrenado con train+val (para producción)
-    python src/train_model.py --datos train        # reproduce el v0.1.0 registrado y lo mide en val
+    python src/train_model.py --version v1.0.0                 # config del mejor mlp registrado, entrenado con
+                                                               # train+val y registrado como v1.0.0
+    python src/train_model.py --version v1.0.1 --base v0.1.0   # elegir de qué versión se toma la config
+    python src/train_model.py                                  # pide la versión por teclado
+    python src/train_model.py --datos train --base v0.1.0      # solo verifica: reproduce v0.1.0 y lo mide en
+                                                               # val (no guarda ni registra nada)
 
 Cargar el pipeline desde otro script:
-    sys.path.insert(0, "src"); pipe = joblib.load("models/pipeline_mlp_v0.1.0_train-val.joblib")
+    sys.path.insert(0, "src"); pipe = joblib.load("models/mlp_v1.0.0.joblib")
     pipe.predecir_manana(df_ultimos_dias)          # df con al menos 15 días, como df_total.xlsx
 """
 from __future__ import annotations
 
 import argparse
 import copy
-import json
 import platform
+import re
 import warnings
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -45,12 +49,14 @@ from sklearn.preprocessing import (MinMaxScaler, PowerTransformer, QuantileTrans
 from feature_selection import SEMILLA, SelectorFiltro
 from preprocess import (COL_FECHA, COLS_CICLICAS, COLS_SIN_LIMITES, ROOT, RUTA_LINEAGE, TARGET,
                         ConfigDerivadas, ConfigFaltantes, ConfigInvalidos, ConfigOutliers, ConfigSplit,
-                        Preprocess, agregar_derivadas, cargar_dataset_limpio, cargar_registro, huella)
+                        Preprocess, _clave, agregar_derivadas, cargar_dataset_limpio, cargar_registro,
+                        guardar_registro, huella)
 
 RUTA_MODELOS = ROOT / "models"
 RUTA_REGISTRO_MODELOS = RUTA_MODELOS / "model_registry.json"
-MODELO, VERSION = "mlp", "v0.1.0"    # el mejor modelo registrado (MAE val 2244.8)
-DIAS_HISTORIA = 15                   # lag7 y media móvil de 14 días + el día a predecir
+MODELO = "mlp"
+TIPO_PIPELINE = "PipelineFrio"       # marca en el registro las versiones que van de df_total a la predicción
+DIAS_HISTORIA = 15                 # lag7 y media móvil de 14 días + el día a predecir
 
 
 # =============================================================================
@@ -150,15 +156,27 @@ def _sin_avisos():
 # 2. Configuración desde los registros
 # =============================================================================
 
-def cargar_config(modelo: str = MODELO, version: str | None = VERSION,
+def normalizar_version(version: str) -> str:
+    """"1.0.0" o "v1.0.0" -> "v1.0.0"; cualquier otra cosa es un error."""
+    v = str(version).strip()
+    if not re.fullmatch(r"v?\d+\.\d+\.\d+", v):
+        raise ValueError(f"Versión inválida {version!r}: tiene que ser vMAJOR.MINOR.PATCH (p. ej. v1.0.0)")
+    return v if v.startswith("v") else f"v{v}"
+
+
+def cargar_config(modelo: str = MODELO, version: str | None = None,
                   registro: str | Path = RUTA_REGISTRO_MODELOS, lineage: str | Path = RUTA_LINEAGE) -> dict:
     """{"registro": entrada del modelo, "linaje": entrada del dataset con el que se entrenó}.
-    version=None -> la última versión registrada de ese modelo."""
+    version=None -> la versión de ese modelo con menor MAE de validación."""
     entradas = [e for e in cargar_registro(registro) if e["modelo"] == modelo]
     if version is not None:
+        version = normalizar_version(version)
         entradas = [e for e in entradas if e["version"] == version]
+    else:
+        entradas = sorted((e for e in entradas if e.get("metricas", {}).get("mae_val") is not None),
+                          key=lambda e: e["metricas"]["mae_val"], reverse=True)
     if not entradas:
-        raise KeyError(f"No hay {modelo} {version or ''} en {registro}")
+        raise KeyError(f"No hay {modelo} {version or 'con MAE de validación'} en {registro}")
     entrada = entradas[-1]
 
     sha = entrada["dataset"]["sha256"]
@@ -237,11 +255,47 @@ class PipelineFrio(BaseEstimator):
         X = self.preprocess_.transform(d.drop(columns=TARGET, errors="ignore"))
         return X.set_index(COL_FECHA)
 
+    def ajustar_preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Ajusta solo Preprocess (límites de outliers, imputador) con `df`. Devuelve df con las derivadas."""
+        d = self._derivadas(df)
+        self.preprocess_ = copy.deepcopy(self.preprocess).fit(d)
+        return d
+
+    def transformar(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Días limpios -> variables listas para el modelo (derivadas + Preprocess), indexadas por fecha."""
+        return self._features(self._derivadas(df))
+
+    def columnas_entrada(self) -> list[str]:
+        """Columnas (sin las derivadas) con las que se ajustó Preprocess: las que conoce de un df de entrada."""
+        return [c for c in self.preprocess_._features_fit if c not in self._origen_derivadas()]
+
+    def _origen_derivadas(self) -> dict[str, set[str]]:
+        """{variable derivada: columnas de las que sale}, con los mismos nombres que arma agregar_derivadas."""
+        cfg, cols = self.cfg_derivadas, self.preprocess_._features_fit
+        origen = {f"{c} lag{k}": {c} for c in cfg.cols_temporales for k in cfg.lags or []}
+        origen |= {f"{c} mm{v}": {c} for c in cfg.cols_temporales for v in cfg.ventanas or []}
+        origen |= {f"{a} / {b}": {a, b} for a, b in cfg.ratios or []}
+        origen |= {f"{a} x {b}": {a, b} for a, b in cfg.interacciones or []}
+        if cfg.meta:   # igual que agregar_cumplimiento_meta
+            reales = {_clave(c): c for c in cols if c.endswith("hl") and not c.startswith("meta")}
+            for m in (c for c in cols if c.startswith("meta")):
+                if real := reales.get(_clave(m.removeprefix("meta "))):
+                    origen[f"cumpl {real.removesuffix('/hl').removesuffix('/ hl').strip()}"] = {real, m}
+        return origen
+
+    def columnas_necesarias(self, columnas_modelo) -> list[str]:
+        """Columnas de planta sin las que no se puede predecir: las que pide ConfigDerivadas y las que usa
+        el modelo (directamente o a través de una derivada). Clima y mes no cuentan: no vienen en el Excel."""
+        cfg, origen = self.cfg_derivadas, self._origen_derivadas()
+        necesarias = {*cfg.cols_temporales, *(c for par in [*cfg.ratios, *cfg.interacciones] for c in par)}
+        for c in columnas_modelo:
+            necesarias |= origen.get(c, {c})
+        return sorted(c for c in necesarias if c not in COLS_SIN_LIMITES)
+
     def fit(self, df: pd.DataFrame, y=None) -> "PipelineFrio":
         """df: días limpios con la columna target (frío de mañana). Las filas sin target no entrenan
         el modelo, pero sí cuentan para los lags y para ajustar Preprocess (igual que en src/main.py)."""
-        d = self._derivadas(df)
-        self.preprocess_ = copy.deepcopy(self.preprocess).fit(d)
+        d = self.ajustar_preprocess(df)
         X = self._features(d)
         y = d.set_index(COL_FECHA)[TARGET]
         ok = y.notna()
@@ -283,35 +337,67 @@ def _entorno() -> dict:
     return {"python": platform.python_version(), "scikit-learn": sklearn.__version__, "numpy": np.__version__,
             "pandas": pd.__version__, "joblib": joblib.__version__}
 
-
-def entrenar(modelo: str = MODELO, version: str | None = VERSION, datos: str = "train+val",
-             carpeta: str | Path = RUTA_MODELOS, guardar: bool = True) -> tuple[PipelineFrio, dict]:
-    """Entrena PipelineFrio con la config registrada y lo guarda junto a un .json de metadata.
-
-    datos="train+val": modelo para producción (no queda nada para medirlo; test sigue reservado).
-    datos="train": reproduce la versión registrada y la mide en val contra el registro.
-    """
-    if datos not in ("train", "train+val"):
-        raise ValueError(f"datos tiene que ser 'train' o 'train+val', no {datos!r}")
-    cfg = cargar_config(modelo, version)
+def _pipeline_y_datos(cfg: dict) -> tuple[PipelineFrio, pd.DataFrame, pd.DataFrame, str]:
+    """(PipelineFrio sin entrenar, train, val, sha256 de la entrada) para una config de cargar_config()."""
     entrada, linaje = cfg["registro"], cfg["linaje"]
-    version = entrada["version"]
-
     ruta_in = ROOT / linaje["input"]["archivo"]
+    if not ruta_in.exists():
+        raise FileNotFoundError(f"Falta {linaje['input']['archivo']}: es el dataset limpio con el que se ajusta "
+                                f"el preprocesamiento de {entrada['modelo']} {entrada['version']}")
     sha_in = huella(ruta_in)
     if sha_in != linaje["input"]["sha256"]:
         print(f"AVISO: {linaje['input']['archivo']} cambió desde que se generó el dataset del modelo "
               f"({linaje['input']['sha256'][:12]}... -> {sha_in[:12]}...): el split y los datos no son los mismos.")
-
     preprocess = crear_preprocess(linaje)
     train, val, _ = preprocess.train_test_split(cargar_dataset_limpio(ruta_in))   # test no se usa
-    datos_fit = train if datos == "train" else pd.concat([train, val])
+    pipe = PipelineFrio(entrada["modelo"], params_modelo(entrada), cfg_pipeline(entrada),
+                        crear_derivadas(linaje), preprocess)
+    return pipe, train, val, sha_in
 
-    pipe = PipelineFrio(modelo, params_modelo(entrada), cfg_pipeline(entrada), crear_derivadas(linaje), preprocess)
+
+def preprocesado_registrado(modelo: str, version: str, registro: str | Path = RUTA_REGISTRO_MODELOS) -> PipelineFrio:
+    """PipelineFrio con solo el preprocesamiento ajustado (sin `modelo_`), para las versiones del registro que
+    son un Pipeline sobre dataset_final.csv: derivadas + Preprocess ajustado con train, como se generó ese dataset."""
+    pipe, train, _, _ = _pipeline_y_datos(cargar_config(modelo, version, registro))
+    pipe.ajustar_preprocess(train)
+    return pipe
+
+
+def _version_libre(modelo: str, version: str, registro: str | Path) -> str:
+    version = normalizar_version(version)
+    if any(e["modelo"] == modelo and e["version"] == version for e in cargar_registro(registro)):
+        raise ValueError(f"{modelo} {version} ya está en {Path(registro).name}: elegí otra versión")
+    return version
+
+
+def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None = None, datos: str = "train+val",
+             carpeta: str | Path = RUTA_MODELOS, registro: str | Path = RUTA_REGISTRO_MODELOS,
+             guardar: bool = True) -> tuple[PipelineFrio, dict]:
+    """Entrena PipelineFrio con la config de la versión `base` del registro.
+
+    datos="train+val": modelo para producción (no queda nada para medirlo; test sigue reservado). Se guarda en
+        models/{modelo}_{version}.joblib y se agrega como una entrada nueva `version` en model_registry.json.
+    datos="train": verificación; reproduce `base` y lo mide en val contra el registro. No guarda nada.
+    base=None -> la versión de `modelo` con menor MAE de validación.
+    """
+    if datos not in ("train", "train+val"):
+        raise ValueError(f"datos tiene que ser 'train' o 'train+val', no {datos!r}")
+    guardar = guardar and datos == "train+val"
+    if guardar:
+        if version is None:
+            raise ValueError("Falta la versión con la que se registra el modelo (p. ej. version='v1.0.0')")
+        version = _version_libre(modelo, version, registro)   # antes de entrenar: falla rápido
+    cfg = cargar_config(modelo, base, registro)
+    entrada, linaje = cfg["registro"], cfg["linaje"]
+    base = entrada["version"]
+    print(f"Config de {modelo} {base} ({entrada['archivo']})")
+
+    pipe, train, val, sha_in = _pipeline_y_datos(cfg)
+    datos_fit = train if datos == "train" else pd.concat([train, val])
     t0 = datetime.now()
     pipe.fit(datos_fit)
     seg = (datetime.now() - t0).total_seconds()
-    print(f"{modelo} {version} entrenado con {datos} ({len(datos_fit)} días, "
+    print(f"{modelo} (config {base}) entrenado con {datos} ({len(datos_fit)} días, "
           f"{datos_fit[COL_FECHA].min():%Y-%m-%d} a {datos_fit[COL_FECHA].max():%Y-%m-%d}) en {seg:.1f} s | "
           f"{len(pipe.columnas_)} variables")
 
@@ -327,44 +413,59 @@ def entrenar(modelo: str = MODELO, version: str | None = VERSION, datos: str = "
             print("AVISO: las variables elegidas no son las del registro")
     print("Métricas:", {k: round(v, 3) for k, v in metricas.items()})
 
-    meta = {
+    # misma forma que las entradas que registra notebooks/modelado.ipynb, más `tipo`
+    nueva = {
         "modelo": modelo,
         "version": version,
+        "tipo": TIPO_PIPELINE,
+        "archivo": None,
+        "sha256": None,
         "fecha": datetime.now().isoformat(timespec="seconds"),
-        "entrenado_con": {"datos": datos, "n_filas": len(datos_fit),
+        "version_previa": base,
+        "estudio_optuna": entrada.get("estudio_optuna"),
+        "corrida": entrada.get("corrida"),
+        # dataset: el del linaje de la base, así cargar_config() también funciona con esta versión
+        **{k: entrada[k] for k in ("dataset", "arquitectura", "hiperparametros", "preprocesamiento")},
+        "metricas": metricas,   # con train+val solo hay métricas de train: val está adentro y test reservado
+        "entrenado_con": {"split": datos, "n_filas": len(datos_fit),
                           "desde": f"{datos_fit[COL_FECHA].min():%Y-%m-%d}",
-                          "hasta": f"{datos_fit[COL_FECHA].max():%Y-%m-%d}"},
-        "entrada": {"archivo": linaje["input"]["archivo"], "sha256": sha_in},
-        "dataset_linaje": linaje["output"],
-        "registro_modelo": {"archivo": entrada["archivo"], "sha256": entrada["sha256"]},
-        "metricas": metricas,
-        "seg_entrenamiento": round(seg, 1),
+                          "hasta": f"{datos_fit[COL_FECHA].max():%Y-%m-%d}",
+                          "entrada": {"archivo": linaje["input"]["archivo"], "sha256": sha_in},
+                          "seg": round(seg, 1)},
         "n_features": len(pipe.columnas_),
         "columnas": pipe.columnas_,
+        "semilla": entrada.get("semilla"),
         "entorno": _entorno(),
+        "cargar_con": None,
     }
     if guardar:
         carpeta = Path(carpeta)
         carpeta.mkdir(parents=True, exist_ok=True)
-        nombre = f"{modelo}_{version}_{datos.replace('+', '-')}"
-        ruta = carpeta / f"{nombre}.joblib"
+        ruta = carpeta / f"{modelo}_{version}.joblib"
         joblib.dump(pipe, ruta, compress=3)
-        meta["archivo"] = ruta.relative_to(ROOT).as_posix() if ruta.is_relative_to(ROOT) else str(ruta)
-        meta["sha256"] = huella(ruta)
-        meta["cargar_con"] = f"sys.path.insert(0, 'src'); joblib.load('{meta['archivo']}').predecir_manana(df)"
-        with open(carpeta / f"{nombre}.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False, default=str)
-        print(f"Guardado: {meta['archivo']} ({meta['sha256'][:12]}...)")
-    return pipe, meta
+        archivo = ruta.relative_to(ROOT).as_posix() if ruta.is_relative_to(ROOT) else str(ruta)
+        nueva |= {"archivo": archivo, "sha256": huella(ruta),
+                  "cargar_con": f"sys.path.insert(0, 'src'); joblib.load('{archivo}').predecir_manana(df)"}
+        guardar_registro(cargar_registro(registro) + [nueva], registro)
+        print(f"Guardado: {archivo} ({nueva['sha256'][:12]}...)")
+        print(f"Registrado en {Path(registro).name}: {modelo} {version} (config de {base})")
+    return pipe, nueva
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Entrena el pipeline completo (derivadas + Preprocess + modelo).")
     parser.add_argument("--modelo", default=MODELO, choices=list(ESTIMADORES))
-    parser.add_argument("--version", default=VERSION, help="versión del registro (por defecto %(default)s)")
-    parser.add_argument("--datos", default="train+val", choices=["train+val", "train"])
+    parser.add_argument("--version", help="versión con la que se registra el modelo nuevo (p. ej. v1.0.0); "
+                                          "si falta, se pide por teclado")
+    parser.add_argument("--base", help="versión del registro de la que se toma la config "
+                                       "(por defecto, la de menor MAE de validación)")
+    parser.add_argument("--datos", default="train+val", choices=["train+val", "train"],
+                        help="train = solo verificar la base contra val, sin guardar")
     args = parser.parse_args()
-    entrenar(args.modelo, args.version, args.datos)
+    version = args.version
+    if args.datos == "train+val" and not version:
+        version = input("Versión del modelo nuevo (p. ej. v1.0.0): ")
+    entrenar(args.modelo, version, args.base, args.datos)
 
 
 if __name__ == "__main__":

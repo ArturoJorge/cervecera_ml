@@ -1,0 +1,68 @@
+{
+  "modelo": "mlp",
+  "version": "v0.1.0",
+  "fecha": "2026-11-14T15:15:18",
+  "entrenado_con": {
+    "datos": "train+val",
+    "n_filas": 1030,
+    "desde": "2020-07-01",
+    "hasta": "2023-04-26"
+  },
+  "entrada": {
+    "archivo": "data/clean/df_total.xlsx",
+    "sha256": "4ccd042fe124d6040bc438c8a8c3ebdd748212d8df07539406956fdfa9b44d55"
+  },
+  "dataset_linaje": {
+    "archivo": "data/processed/dataset_final.csv",
+    "sha256": "c3aefeb4860d624f9d90402718f4fe53ed8a633daeb4f6b0898404b2959acbaa"
+  },
+  "registro_modelo": {
+    "archivo": "models/mlp_v0.1.0.joblib",
+    "sha256": "f78cbfbba293eeaea4d2caaef890ff7d69bbf42743d42446fcc473056f9bc360"
+  },
+  "metricas": {
+    "mae_train": 2787.514813120101,
+    "rmse_train": 3726.166861153193,
+    "r2_train": 0.7861100717697216
+  },
+  "seg_entrenamiento": 5.7,
+  "n_features": 26,
+  "columnas": [
+    "frio (kw)",
+    "frio (kw) mm7",
+    "frio (kw) mm3",
+    "servicios (kw)",
+    "sala maq (kw)",
+    "hl cerveza envasada",
+    "temp media (°c)",
+    "temp max (°c)",
+    "temp min (°c)",
+    "humedad media (%)",
+    "humedad max (%)",
+    "humedad min (%)",
+    "mes_sin",
+    "mes_cos",
+    "temp media (°c) lag1",
+    "temp media (°c) lag2",
+    "temp media (°c) lag7",
+    "hl cerveza envasada lag1",
+    "hl cerveza envasada lag2",
+    "hl cerveza envasada lag7",
+    "temp media (°c) mm3",
+    "temp media (°c) mm7",
+    "temp media (°c) mm14",
+    "hl cerveza envasada mm3",
+    "hl cerveza envasada mm7",
+    "hl cerveza envasada mm14"
+  ],
+  "entorno": {
+    "python": "3.12.14",
+    "scikit-learn": "1.9.1",
+    "numpy": "2.5.3",
+    "pandas": "3.0.6",
+    "joblib": "1.6.0"
+  },
+  "archivo": "models/pipeline_mlp_v0.1.0_train-val.joblib",
+  "sha256": "a1d78adc8129e3f5949980d126396fed06fd6548d3e1ca013499fab1bde41a31",
+  "cargar_con": "sys.path.insert(0, 'src'); joblib.load('models/pipeline_mlp_v0.1.0_train-val.joblib').predecir_manana(df)"
+}

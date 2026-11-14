@@ -24,4 +24,3 @@ CLAUDE.md
 # Optuna (cache y estudios) y modelos serializados (el registro sí se versiona)
 results/.cache/
 results/optuna.db
-models/*.joblib

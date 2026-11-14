@@ -45,7 +45,7 @@ from sklearn.preprocessing import (MinMaxScaler, PowerTransformer, QuantileTrans
 from feature_selection import SEMILLA, SelectorFiltro
 from preprocess import (COL_FECHA, COLS_CICLICAS, COLS_SIN_LIMITES, ROOT, RUTA_LINEAGE, TARGET,
                         ConfigDerivadas, ConfigFaltantes, ConfigInvalidos, ConfigOutliers, ConfigSplit,
-                        Preprocess, agregar_derivadas, cargar_dataset_limpio, cargar_registro, huella)
+                        Preprocess, agregar_derivadas, cargar_dataset_limpio, cargar_registro, huella, guardar_registro, )
 
 RUTA_MODELOS = ROOT / "models"
 RUTA_REGISTRO_MODELOS = RUTA_MODELOS / "model_registry.json"
@@ -283,6 +283,20 @@ def _entorno() -> dict:
     return {"python": platform.python_version(), "scikit-learn": sklearn.__version__, "numpy": np.__version__,
             "pandas": pd.__version__, "joblib": joblib.__version__}
 
+def registrar_pipeline(meta: dict, registro: str | Path = RUTA_REGISTRO_MODELOS) -> None:
+    """Anota el PipelineFrio guardado dentro de su entrada del model_registry."""
+    entradas = cargar_registro(registro)
+    sha_entrada = meta["registro_modelo"]["sha256"]
+    entrada = next((e for e in entradas if e["sha256"] == sha_entrada), None)
+    if entrada is None:
+        raise KeyError(f"No está la entrada de {meta['modelo']} {meta['version']} en {registro}")
+
+    clave = meta["entrenado_con"]["datos"].replace("+", "-")       # "train-val" o "train"
+    entrada.setdefault("pipelines", {})[clave] = {
+        k: meta[k] for k in ("archivo", "sha256", "fecha", "entrenado_con", "metricas", "entorno")
+    }
+    guardar_registro(entradas, registro)
+    print(f"Registrado en {Path(registro).name}: {meta['modelo']} {meta['version']} -> pipelines[{clave!r}]")
 
 def entrenar(modelo: str = MODELO, version: str | None = VERSION, datos: str = "train+val",
              carpeta: str | Path = RUTA_MODELOS, guardar: bool = True) -> tuple[PipelineFrio, dict]:
@@ -351,10 +365,8 @@ def entrenar(modelo: str = MODELO, version: str | None = VERSION, datos: str = "
         joblib.dump(pipe, ruta, compress=3)
         meta["archivo"] = ruta.relative_to(ROOT).as_posix() if ruta.is_relative_to(ROOT) else str(ruta)
         meta["sha256"] = huella(ruta)
-        meta["cargar_con"] = f"sys.path.insert(0, 'src'); joblib.load('{meta['archivo']}').predecir_manana(df)"
-        with open(carpeta / f"{nombre}.json", "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False, default=str)
         print(f"Guardado: {meta['archivo']} ({meta['sha256'][:12]}...)")
+        registrar_pipeline(meta)
     return pipe, meta
 
 

@@ -45,6 +45,7 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (MinMaxScaler, PowerTransformer, QuantileTransformer,
                                    RobustScaler, StandardScaler)
+from xgboost import XGBRegressor
 
 from feature_selection import SEMILLA, SelectorFiltro
 from preprocess import (COL_FECHA, COLS_CICLICAS, COLS_SIN_LIMITES, ROOT, RUTA_LINEAGE, TARGET,
@@ -133,7 +134,7 @@ def crear_mlp(**params) -> TransformedTargetRegressor:
     return TransformedTargetRegressor(regressor=MLPRegressor(**params), transformer=StandardScaler())
 
 
-ESTIMADORES = {"mlp": crear_mlp, "lasso": Lasso}   # los modelos que hay en el registro
+ESTIMADORES = {"mlp": crear_mlp, "lasso": Lasso, "xgboost": XGBRegressor}   # los modelos que hay en el registro
 
 
 def crear_modelo(nombre: str, params: dict, cfg: dict, columnas) -> Pipeline:

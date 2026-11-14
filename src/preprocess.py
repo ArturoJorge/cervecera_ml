@@ -13,18 +13,7 @@ import pandas as pd
 import requests
 from scipy import stats
 from sklearn.impute import KNNImputer, SimpleImputer
-from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
-from sklearn.preprocessing import PowerTransformer
-from sklearn.feature_selection import RFE, SequentialFeatureSelector, f_regression, mutual_info_regression
-from sklearn.linear_model import Lasso, Ridge
-
-from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.feature_selection import SelectFromModel
-from sklearn.ensemble import RandomForestRegressor
-
-from sklearn.base import BaseEstimator, TransformerMixin, clone
+from sklearn.preprocessing import MinMaxScaler, PowerTransformer, RobustScaler, StandardScaler
 
 # =============================================================================
 # Rutas y constantes
@@ -501,7 +490,6 @@ def guardar_dataset_final(
     splits: dict[str, tuple[pd.DataFrame, pd.Series]],
     script: str,
     cfg_derivadas: "ConfigDerivadas | None" = None,
-    seleccion: "SeleccionVariables | None" = None,
     ruta: str | Path = RUTA_FINAL,
     entrada: str | Path = RUTA_LIMPIO,
 ) -> dict:
@@ -531,8 +519,6 @@ def guardar_dataset_final(
     ]
     if cfg_derivadas is not None:
         pasos.insert(1, {"paso": "agregar_derivadas", "script": "src/preprocess.py", "config": asdict(cfg_derivadas)})
-    if seleccion is not None:
-        pasos.append({"paso": "seleccion de variables", "script": "src/preprocess.py", **seleccion.resumen()})
     registro = {
         "fecha": ahora,
         "script": script,
@@ -873,170 +859,3 @@ class Preprocess:
             "config": {k: asdict(v) if v else None for k, v in cfgs.items()},
             "pasos": self._log,
         }
-
-
-# =============================================================================
-# 5. Selección de variables (filtro + wrapper)
-# =============================================================================
-# La config final se elige con el estudio de Optuna de preprocesamiento.ipynb y se copia a main.py.
-
-@dataclass
-class ConfigFiltro:
-    metodo: Literal["pearson", "spearman", "f_regression", "mutual_info"] = "f_regression"
-    k: int = 60                                    # columnas que pasan al wrapper
-
-
-@dataclass
-class ConfigWrapper:
-    metodo: Literal["rfe", "forward", "backward"] = "rfe"                      
-    n_features: int = 50                          # rfe / forward / backward
-    estimador: Literal["ridge", "lgbm"] = "ridge"  # rfe / forward / backward
-
-
-_FILTROS = {"pearson", "spearman", "f_regression", "mutual_info"}
-_WRAPPERS = {"rfe", "forward", "backward"}
-
-
-class SeleccionVariables:
-    """Filtro (score univariado, top k) y después wrapper sobre esas k columnas.
-    Se fittea solo con train (salida de Preprocess, sin NaN) y se aplica igual a val/test.
-    Cualquiera de los dos pasos se desactiva pasando None."""
-
-    def __init__(self, filtro: ConfigFiltro | None = _DEFAULT, wrapper: ConfigWrapper | None = _DEFAULT,
-                 verbose: bool = False):
-        self.filtro = ConfigFiltro() if filtro is _DEFAULT else filtro
-        self.wrapper = ConfigWrapper() if wrapper is _DEFAULT else wrapper
-        self.verbose = verbose
-        if self.filtro and self.filtro.metodo not in _FILTROS:
-            raise ValueError(f"Filtro inválido: {self.filtro.metodo!r}")
-        if self.wrapper and self.wrapper.metodo not in _WRAPPERS:
-            raise ValueError(f"Wrapper inválido: {self.wrapper.metodo!r}")
-
-    def _scores(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        m = self.filtro.metodo
-        if m in ("pearson", "spearman"):
-            s = X.corrwith(y, method=m).abs()
-        elif m == "f_regression":
-            s = pd.Series(f_regression(X, y)[0], index=X.columns)
-        else:
-            s = pd.Series(mutual_info_regression(X, y, random_state=0), index=X.columns)
-        return s.fillna(0).sort_values(ascending=False)  # columnas constantes dan NaN: van al final
-
-    def _estimador(self):
-        if self.wrapper.estimador == "lgbm":
-            from lightgbm import LGBMRegressor
-            return LGBMRegressor(n_estimators=200, verbose=-1, random_state=0)
-        return Ridge()
-
-    def _wrapper(self, X: pd.DataFrame, y: pd.Series) -> list[str]:
-        cfg = self.wrapper
-        n = min(cfg.n_features, X.shape[1])
-        if cfg.metodo == "rfe":
-            sel = RFE(self._estimador(), n_features_to_select=n)
-        else:
-            # shortcut: un solo corte temporal (último 20% de train) para puntuar; pasar a TimeSeriesSplit si es inestable
-            corte = int(len(X) * 0.8)
-            idx = np.arange(len(X))
-            sel = SequentialFeatureSelector(self._estimador(), direction=cfg.metodo,
-                                            cv=[(idx[:corte], idx[corte:])], scoring="neg_mean_absolute_error")
-        return X.columns[sel.fit(X, y).get_support()].tolist()
-
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> "SeleccionVariables":
-        if X.isna().to_numpy().any():
-            raise ValueError("X tiene NaN: activá `faltantes` en Preprocess antes de seleccionar variables")
-        self.n_inicio_ = X.shape[1]
-        cols = X.columns.tolist()
-        if self.filtro:
-            self.scores_ = self._scores(X, y)
-            cols = self.scores_.index[: self.filtro.k].tolist()
-        self.n_filtro_ = len(cols)
-        self.seleccionadas_ = self._wrapper(X[cols], y) if self.wrapper else cols
-        if self.verbose:
-            print(f"  -> selección: {self.n_inicio_} columnas -> filtro {self.n_filtro_} -> wrapper {len(self.seleccionadas_)}")
-        return self
-
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        return X[self.seleccionadas_]
-
-    def fit_transform(self, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
-        return self.fit(X, y).transform(X)
-
-    def resumen(self) -> dict:
-        return {
-            "config": {"filtro": asdict(self.filtro) if self.filtro else None,
-                       "wrapper": asdict(self.wrapper) if self.wrapper else None},
-            "columnas": {"inicio": self.n_inicio_, "filtro": self.n_filtro_, "final": len(self.seleccionadas_)},
-            "seleccionadas": self.seleccionadas_,
-        }
-
-
-class SelectorFiltro(BaseEstimator, TransformerMixin):
-    """Top-k por |correlación| con y, descartando columnas redundantes (|corr| >= umbral con una ya elegida).
-    Se ajusta dentro de cada fold cuando va en un Pipeline."""
-    def __init__(self, metodo="spearman", k=80, umbral=0.95):
-        self.metodo, self.k, self.umbral = metodo, k, umbral
-
-    def fit(self, X, y):
-        X = pd.DataFrame(X)
-        X = X.loc[:, X.nunique() > 1]                      # fuera constantes en este fold
-        y = pd.Series(np.asarray(y, dtype=float), index=X.index)
-        R = X.rank() if self.metodo in ("spearman", "mutual_info") else X   # redundancia sobre rangos
-
-        if self.metodo == "mutual_info":
-            s = pd.Series(mutual_info_regression(X, y, random_state=42), index=X.columns)
-        else:
-            Xr, yr = (R, y.rank()) if self.metodo == "spearman" else (X, y)
-            Xc, yc = Xr - Xr.mean(), yr - yr.mean()
-            with np.errstate(invalid="ignore", divide="ignore"):
-                s = (Xc.mul(yc, axis=0).sum() / np.sqrt((Xc ** 2).sum() * (yc ** 2).sum())).abs()
-        s = s.fillna(0).sort_values(ascending=False)
-
-        if self.umbral is None:
-            self.columnas_ = s.index[: self.k].tolist()
-            return self
-        with np.errstate(invalid="ignore", divide="ignore"):
-            M = R[s.index].corr().abs().fillna(0).to_numpy()
-        elegidas = []
-        for i in range(len(s)):
-            if all(M[i, j] < self.umbral for j in elegidas):
-                elegidas.append(i)
-                if len(elegidas) == self.k:
-                    break
-        self.columnas_ = s.index[elegidas].tolist()
-        return self
-
-    def transform(self, X):
-        return X[self.columnas_]
-
-
-def construir_preprocesador(columnas, k=80, metodo_sel="spearman", umbral_redundancia=0.95, estimador_rfe=None):
-    """Fase 2: Yeo-Johnson + RobustScaler (menos mes_sin/mes_cos) -> selección top-k.
-    metodo_sel: spearman | mutual_info (filtros) | rfe (wrapper)."""
-    num = [c for c in columnas if c not in COLS_CICLICAS]
-    prep = ColumnTransformer(
-        [("num", Pipeline([("yj", PowerTransformer(method="yeo-johnson", standardize=False)),
-                           ("sc", RobustScaler())]), num)],
-        remainder="passthrough", verbose_feature_names_out=False,
-    ).set_output(transform="pandas")
-
-    if metodo_sel in ("spearman", "mutual_info"):
-        sel = SelectorFiltro(metodo_sel, k, umbral_redundancia)
-    elif metodo_sel == "rfe":
-        if estimador_rfe is None:
-            raise ValueError("rfe necesita el estimador con el que se va a evaluar")
-        sel = RFE(clone(estimador_rfe), n_features_to_select=k, step=0.1)
-    else:
-        raise ValueError(f"metodo_sel inválido: {metodo_sel!r}")
-    return Pipeline([("prep", prep), ("sel", sel)])   # <- este return va al final, sin indentar más que el `if`
-
-
-def construir_pipeline(estimador, columnas, k, **kw):
-    pre = construir_preprocesador(columnas, k, estimador_rfe=estimador, **kw)
-    return Pipeline([*pre.steps, ("modelo", estimador)])
-
-def columnas_elegidas(pipe) -> list[str]:
-    """Columnas que dejó el paso de selección, sea filtro (columnas_) o RFE (get_support)."""
-    sel = pipe.named_steps["sel"]
-    if hasattr(sel, "columnas_"):
-        return list(sel.columnas_)
-    return list(pipe.named_steps["prep"].get_feature_names_out()[sel.get_support()])

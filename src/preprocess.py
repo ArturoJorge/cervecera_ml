@@ -492,20 +492,29 @@ def guardar_dataset_final(
     cfg_derivadas: "ConfigDerivadas | None" = None,
     ruta: str | Path = RUTA_FINAL,
     entrada: str | Path = RUTA_LIMPIO,
-) -> dict:
+    lineage: str | Path = RUTA_LINEAGE,
+    checksums: str | Path = RUTA_CHECKSUMS,
+) -> dict | None:
     """Guarda train/val/test ya preprocesados en un CSV (columna `split`), registra su sha256
     en checksums.json y agrega una entrada al linaje (data_lineage.json) con script, fecha,
-    transformaciones y shapes de cada X."""
+    transformaciones y shapes de cada X. Si el CSV es idéntico (mismo sha256) al último
+    registrado para esa ruta, no toca ni el linaje ni checksums.json y devuelve None."""
     ruta = Path(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     final = pd.concat([X.assign(**{pp.target: y, "split": nombre}) for nombre, (X, y) in splits.items()])
     final.reset_index().to_csv(ruta, index=False)
 
-    ahora = datetime.now().isoformat(timespec="seconds")
     sha = huella(ruta)
-    checksums = cargar_registro(RUTA_CHECKSUMS) or {}
-    checksums[_relativa(ruta)] = {"sha256": sha, "fecha": ahora}
-    guardar_registro(checksums, RUTA_CHECKSUMS)
+    linaje = cargar_registro(lineage)
+    previas = [e for e in linaje if e["output"]["archivo"] == _relativa(ruta)]
+    if previas and previas[-1]["output"]["sha256"] == sha:
+        print(f"Sin cambios (hash {sha[:12]}...): no se registra en el linaje.")
+        return None
+
+    ahora = datetime.now().isoformat(timespec="seconds")
+    sumas = cargar_registro(checksums) or {}
+    sumas[_relativa(ruta)] = {"sha256": sha, "fecha": ahora}
+    guardar_registro(sumas, checksums)
 
     sha_in = huella(entrada) if Path(entrada).exists() else None
     version_in = next((e["version"] for e in cargar_registro() if e["sha256"] == sha_in), None)
@@ -527,7 +536,7 @@ def guardar_dataset_final(
         "shapes": {f"X_{n}": list(X.shape) for n, (X, _) in splits.items()},
         "output": {"archivo": _relativa(ruta), "sha256": sha},
     }
-    guardar_registro(cargar_registro(RUTA_LINEAGE) + [registro], RUTA_LINEAGE)
+    guardar_registro(linaje + [registro], lineage)
     print(f"Dataset final: {_relativa(ruta)} ({sha[:12]}...) | shapes: {registro['shapes']}")
     return registro
 

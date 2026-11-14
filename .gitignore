@@ -21,6 +21,7 @@ __pycache__/
 graphify-out/
 CLAUDE.md
 
-# Optuna: cache de transformaciones y base de estudios
+# Optuna (cache y estudios) y modelos serializados (el registro sí se versiona)
 results/.cache/
 results/optuna.db
+models/*.joblib

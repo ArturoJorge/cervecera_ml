@@ -5280,5 +5280,311 @@
       "archivo": "data/processed/dataset_final.csv",
       "sha256": "c3aefeb4860d624f9d90402718f4fe53ed8a633daeb4f6b0898404b2959acbaa"
     }
+  },
+  {
+    "fecha": "2026-11-14T16:19:08",
+    "script": "src/main.py",
+    "input": {
+      "archivo": "data/clean/df_total.xlsx",
+      "sha256": "4ccd042fe124d6040bc438c8a8c3ebdd748212d8df07539406956fdfa9b44d55",
+      "version": null
+    },
+    "transformaciones": [
+      {
+        "paso": "construir_dataset",
+        "script": "src/preprocess.py",
+        "detalle": "ver data/logs/data_log.json None"
+      },
+      {
+        "paso": "agregar_derivadas",
+        "script": "src/preprocess.py",
+        "config": {
+          "cols_temporales": [
+            "frio (kw)",
+            "planta (kw)",
+            "temp media (°c)",
+            "hl cerveza envasada"
+          ],
+          "lags": [
+            1,
+            2,
+            7
+          ],
+          "ventanas": [
+            3,
+            7,
+            14
+          ],
+          "ratios": [
+            [
+              "frio (kw)",
+              "planta (kw)"
+            ],
+            [
+              "sala maq (kw)",
+              "planta (kw)"
+            ],
+            [
+              "servicios (kw)",
+              "planta (kw)"
+            ],
+            [
+              "frio (kw)",
+              "hl cerveza envasada"
+            ]
+          ],
+          "meta": true,
+          "interacciones": [
+            [
+              "temp max (°c)",
+              "hl cerveza envasada"
+            ],
+            [
+              "temp media (°c)",
+              "humedad media (%)"
+            ],
+            [
+              "temp max (°c)",
+              "frio (kw)"
+            ]
+          ]
+        }
+      },
+      {
+        "paso": "split temporal",
+        "script": "src/preprocess.py",
+        "config": {
+          "test_size": 0.15,
+          "val_size": 0.15
+        }
+      },
+      {
+        "paso": "Preprocess",
+        "script": "src/preprocess.py",
+        "config": {
+          "invalidos": {
+            "no_negativas": "ee",
+            "max_abs": 1000000,
+            "rangos": {},
+            "accion": "nan"
+          },
+          "outliers": {
+            "metodo": "iqr",
+            "accion": "clip",
+            "k_iqr": 1.5,
+            "umbral_zmod": 3.5,
+            "percentiles": [
+              0.01,
+              0.99
+            ],
+            "excluir": []
+          },
+          "faltantes": {
+            "estrategia": "knn",
+            "n_vecinos": 5,
+            "max_frac_nulos_col": null
+          },
+          "transformer": null,
+          "scaler": null
+        },
+        "log": {
+          "train": {
+            "filas_inicio": 848,
+            "invalidos_valores": 125,
+            "outliers_valores": 11581,
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 45877,
+            "filas_fin": 848
+          },
+          "val": {
+            "filas_inicio": 182,
+            "invalidos_valores": 12,
+            "outliers_valores": 5451,
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 3323,
+            "filas_fin": 182
+          },
+          "test": {
+            "filas_inicio": 182,
+            "invalidos_valores": 9,
+            "outliers_valores": 4898,
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 2842,
+            "filas_fin": 181
+          }
+        }
+      }
+    ],
+    "shapes": {
+      "X_train": [
+        848,
+        390
+      ],
+      "X_val": [
+        182,
+        390
+      ],
+      "X_test": [
+        181,
+        390
+      ]
+    },
+    "output": {
+      "archivo": "data/processed/dataset_final.csv",
+      "sha256": "5cf9b7bc89d8a975b5aca9139a53d0f4b9229dd112a86be97d7134fc85a2ab7c"
+    }
+  },
+  {
+    "fecha": "2026-11-14T16:23:23",
+    "script": "src/main.py",
+    "input": {
+      "archivo": "data/clean/df_total.xlsx",
+      "sha256": "4ccd042fe124d6040bc438c8a8c3ebdd748212d8df07539406956fdfa9b44d55",
+      "version": null
+    },
+    "transformaciones": [
+      {
+        "paso": "construir_dataset",
+        "script": "src/preprocess.py",
+        "detalle": "ver data/logs/data_log.json None"
+      },
+      {
+        "paso": "agregar_derivadas",
+        "script": "src/preprocess.py",
+        "config": {
+          "cols_temporales": [
+            "frio (kw)",
+            "planta (kw)",
+            "temp media (°c)",
+            "hl cerveza envasada"
+          ],
+          "lags": [
+            1,
+            2,
+            7
+          ],
+          "ventanas": [
+            3,
+            7,
+            14
+          ],
+          "ratios": [
+            [
+              "frio (kw)",
+              "planta (kw)"
+            ],
+            [
+              "sala maq (kw)",
+              "planta (kw)"
+            ],
+            [
+              "servicios (kw)",
+              "planta (kw)"
+            ],
+            [
+              "frio (kw)",
+              "hl cerveza envasada"
+            ]
+          ],
+          "meta": true,
+          "interacciones": [
+            [
+              "temp max (°c)",
+              "hl cerveza envasada"
+            ],
+            [
+              "temp media (°c)",
+              "humedad media (%)"
+            ],
+            [
+              "temp max (°c)",
+              "frio (kw)"
+            ]
+          ]
+        }
+      },
+      {
+        "paso": "split temporal",
+        "script": "src/preprocess.py",
+        "config": {
+          "test_size": 0.15,
+          "val_size": 0.15
+        }
+      },
+      {
+        "paso": "Preprocess",
+        "script": "src/preprocess.py",
+        "config": {
+          "invalidos": {
+            "no_negativas": "ee",
+            "max_abs": 1000000,
+            "rangos": {},
+            "accion": "nan"
+          },
+          "outliers": {
+            "metodo": "iqr",
+            "accion": "clip",
+            "k_iqr": 1.5,
+            "umbral_zmod": 3.5,
+            "percentiles": [
+              0.01,
+              0.99
+            ],
+            "excluir": []
+          },
+          "faltantes": {
+            "estrategia": "knn",
+            "n_vecinos": 5,
+            "max_frac_nulos_col": null
+          },
+          "transformer": null,
+          "scaler": null
+        },
+        "log": {
+          "train": {
+            "filas_inicio": 848,
+            "invalidos_valores": 125,
+            "outliers_valores": 11581,
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 45877,
+            "filas_fin": 848
+          },
+          "val": {
+            "filas_inicio": 182,
+            "invalidos_valores": 12,
+            "outliers_valores": 5451,
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 3323,
+            "filas_fin": 182
+          },
+          "test": {
+            "filas_inicio": 182,
+            "invalidos_valores": 9,
+            "outliers_valores": 4898,
+            "columnas_descartadas_por_nulos": 0,
+            "faltantes_valores": 2842,
+            "filas_fin": 181
+          }
+        }
+      }
+    ],
+    "shapes": {
+      "X_train": [
+        848,
+        390
+      ],
+      "X_val": [
+        182,
+        390
+      ],
+      "X_test": [
+        181,
+        390
+      ]
+    },
+    "output": {
+      "archivo": "data/processed/dataset_final.csv",
+      "sha256": "c3aefeb4860d624f9d90402718f4fe53ed8a633daeb4f6b0898404b2959acbaa"
+    }
   }
 ]

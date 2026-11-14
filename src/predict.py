@@ -20,7 +20,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from preprocess import *
 from train_model import *
-
+from train_model import _sin_avisos   # `import *` no trae los nombres que empiezan con _
 RUTA_PREDICCIONES = ROOT / "results" / "predicciones.csv"
 
 

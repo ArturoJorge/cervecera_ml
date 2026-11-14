@@ -13,10 +13,7 @@ import pandas as pd
 import requests
 from scipy import stats
 from sklearn.impute import KNNImputer, SimpleImputer
-from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
-from sklearn.preprocessing import PowerTransformer
-from sklearn.feature_selection import RFE, SequentialFeatureSelector, f_regression, mutual_info_regression
-from sklearn.linear_model import Lasso, Ridge
+from sklearn.preprocessing import MinMaxScaler, PowerTransformer, RobustScaler, StandardScaler
 
 # =============================================================================
 # Rutas y constantes
@@ -56,6 +53,7 @@ VARS_CLIMA = {  # variable diaria de Open-Meteo -> nombre de columna
 }
 # features externas (clima y mes) y sus derivadas (por prefijo): inválidos y outliers no las tocan
 COLS_SIN_LIMITES = [*VARS_CLIMA.values(), "mes_sin", "mes_cos"]
+COLS_CICLICAS = ["mes_sin", "mes_cos"]   # no se les aplica Yeo-Johnson ni scaler
 # metas y cumplimiento de meta: la regla de no negativos nunca se les aplica (aunque no_negativas="all")
 PREFIJOS_NEGATIVOS_OK = ("meta", "cumpl")
 
@@ -492,23 +490,31 @@ def guardar_dataset_final(
     splits: dict[str, tuple[pd.DataFrame, pd.Series]],
     script: str,
     cfg_derivadas: "ConfigDerivadas | None" = None,
-    seleccion: "SeleccionVariables | None" = None,
     ruta: str | Path = RUTA_FINAL,
     entrada: str | Path = RUTA_LIMPIO,
-) -> dict:
+    lineage: str | Path = RUTA_LINEAGE,
+    checksums: str | Path = RUTA_CHECKSUMS,
+) -> dict | None:
     """Guarda train/val/test ya preprocesados en un CSV (columna `split`), registra su sha256
     en checksums.json y agrega una entrada al linaje (data_lineage.json) con script, fecha,
-    transformaciones y shapes de cada X."""
+    transformaciones y shapes de cada X. Si el CSV es idéntico (mismo sha256) al último
+    registrado para esa ruta, no toca ni el linaje ni checksums.json y devuelve None."""
     ruta = Path(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     final = pd.concat([X.assign(**{pp.target: y, "split": nombre}) for nombre, (X, y) in splits.items()])
     final.reset_index().to_csv(ruta, index=False)
 
-    ahora = datetime.now().isoformat(timespec="seconds")
     sha = huella(ruta)
-    checksums = cargar_registro(RUTA_CHECKSUMS) or {}
-    checksums[_relativa(ruta)] = {"sha256": sha, "fecha": ahora}
-    guardar_registro(checksums, RUTA_CHECKSUMS)
+    linaje = cargar_registro(lineage)
+    previas = [e for e in linaje if e["output"]["archivo"] == _relativa(ruta)]
+    if previas and previas[-1]["output"]["sha256"] == sha:
+        print(f"Sin cambios (hash {sha[:12]}...): no se registra en el linaje.")
+        return None
+
+    ahora = datetime.now().isoformat(timespec="seconds")
+    sumas = cargar_registro(checksums) or {}
+    sumas[_relativa(ruta)] = {"sha256": sha, "fecha": ahora}
+    guardar_registro(sumas, checksums)
 
     sha_in = huella(entrada) if Path(entrada).exists() else None
     version_in = next((e["version"] for e in cargar_registro() if e["sha256"] == sha_in), None)
@@ -522,8 +528,6 @@ def guardar_dataset_final(
     ]
     if cfg_derivadas is not None:
         pasos.insert(1, {"paso": "agregar_derivadas", "script": "src/preprocess.py", "config": asdict(cfg_derivadas)})
-    if seleccion is not None:
-        pasos.append({"paso": "seleccion de variables", "script": "src/preprocess.py", **seleccion.resumen()})
     registro = {
         "fecha": ahora,
         "script": script,
@@ -532,7 +536,7 @@ def guardar_dataset_final(
         "shapes": {f"X_{n}": list(X.shape) for n, (X, _) in splits.items()},
         "output": {"archivo": _relativa(ruta), "sha256": sha},
     }
-    guardar_registro(cargar_registro(RUTA_LINEAGE) + [registro], RUTA_LINEAGE)
+    guardar_registro(linaje + [registro], lineage)
     print(f"Dataset final: {_relativa(ruta)} ({sha[:12]}...) | shapes: {registro['shapes']}")
     return registro
 
@@ -677,7 +681,7 @@ class Preprocess:
         cfg = self.outliers
         if cfg.metodo == "iqr":
             q1, q3 = X.quantile(0.25), X.quantile(0.75)
-            delta = cfg.k_iqr * (q3 - q1)
+            delta = (cfg.k_iqr * (q3 - q1)).replace(0, np.inf) # IQR 0 -> no se toca
             return q1 - delta, q3 + delta
         if cfg.metodo == "zscore_mod":
             # |0.6745 (x - mediana) / MAD| > umbral  <=>  |x - mediana| > umbral * MAD / 0.6745 (= MAD "normal")
@@ -863,106 +867,4 @@ class Preprocess:
         return {
             "config": {k: asdict(v) if v else None for k, v in cfgs.items()},
             "pasos": self._log,
-        }
-
-
-# =============================================================================
-# 5. Selección de variables (filtro + wrapper)
-# =============================================================================
-# La config final se elige con el estudio de Optuna de preprocesamiento.ipynb y se copia a main.py.
-
-@dataclass
-class ConfigFiltro:
-    metodo: Literal["pearson", "spearman", "f_regression", "mutual_info"] = "f_regression"
-    k: int = 60                                    # columnas que pasan al wrapper
-
-
-@dataclass
-class ConfigWrapper:
-    metodo: Literal["lasso", "rfe", "forward", "backward"] = "lasso"
-    alpha: float = 0.01                            # solo lasso
-    n_features: int = 20                           # rfe / forward / backward
-    estimador: Literal["ridge", "lgbm"] = "ridge"  # rfe / forward / backward
-
-
-_FILTROS = {"pearson", "spearman", "f_regression", "mutual_info"}
-_WRAPPERS = {"lasso", "rfe", "forward", "backward"}
-
-
-class SeleccionVariables:
-    """Filtro (score univariado, top k) y después wrapper sobre esas k columnas.
-    Se fittea solo con train (salida de Preprocess, sin NaN) y se aplica igual a val/test.
-    Cualquiera de los dos pasos se desactiva pasando None."""
-
-    def __init__(self, filtro: ConfigFiltro | None = _DEFAULT, wrapper: ConfigWrapper | None = _DEFAULT,
-                 verbose: bool = False):
-        self.filtro = ConfigFiltro() if filtro is _DEFAULT else filtro
-        self.wrapper = ConfigWrapper() if wrapper is _DEFAULT else wrapper
-        self.verbose = verbose
-        if self.filtro and self.filtro.metodo not in _FILTROS:
-            raise ValueError(f"Filtro inválido: {self.filtro.metodo!r}")
-        if self.wrapper and self.wrapper.metodo not in _WRAPPERS:
-            raise ValueError(f"Wrapper inválido: {self.wrapper.metodo!r}")
-
-    def _scores(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        m = self.filtro.metodo
-        if m in ("pearson", "spearman"):
-            s = X.corrwith(y, method=m).abs()
-        elif m == "f_regression":
-            s = pd.Series(f_regression(X, y)[0], index=X.columns)
-        else:
-            s = pd.Series(mutual_info_regression(X, y, random_state=0), index=X.columns)
-        return s.fillna(0).sort_values(ascending=False)  # columnas constantes dan NaN: van al final
-
-    def _estimador(self):
-        if self.wrapper.estimador == "lgbm":
-            from lightgbm import LGBMRegressor
-            return LGBMRegressor(n_estimators=200, verbose=-1, random_state=0)
-        return Ridge()
-
-    def _wrapper(self, X: pd.DataFrame, y: pd.Series) -> list[str]:
-        cfg = self.wrapper
-        if cfg.metodo == "lasso":
-            coef = Lasso(alpha=cfg.alpha, max_iter=10_000).fit(X, y).coef_
-            cols = X.columns[coef != 0].tolist()
-            if not cols:
-                raise ValueError(f"Lasso con alpha={cfg.alpha} no dejó ninguna columna: bajá alpha")
-            return cols
-        n = min(cfg.n_features, X.shape[1])
-        if cfg.metodo == "rfe":
-            sel = RFE(self._estimador(), n_features_to_select=n)
-        else:
-            # shortcut: un solo corte temporal (último 20% de train) para puntuar; pasar a TimeSeriesSplit si es inestable
-            corte = int(len(X) * 0.8)
-            idx = np.arange(len(X))
-            sel = SequentialFeatureSelector(self._estimador(), n_features_to_select=n, direction=cfg.metodo,
-                                            cv=[(idx[:corte], idx[corte:])], scoring="neg_mean_absolute_error")
-        return X.columns[sel.fit(X, y).get_support()].tolist()
-
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> "SeleccionVariables":
-        if X.isna().to_numpy().any():
-            raise ValueError("X tiene NaN: activá `faltantes` en Preprocess antes de seleccionar variables")
-        self.n_inicio_ = X.shape[1]
-        cols = X.columns.tolist()
-        if self.filtro:
-            self.scores_ = self._scores(X, y)
-            cols = self.scores_.index[: self.filtro.k].tolist()
-        self.n_filtro_ = len(cols)
-        self.seleccionadas_ = self._wrapper(X[cols], y) if self.wrapper else cols
-        if self.verbose:
-            print(f"  -> selección: {self.n_inicio_} columnas -> filtro {self.n_filtro_} -> wrapper {len(self.seleccionadas_)}")
-        return self
-
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
-        return X[self.seleccionadas_]
-
-    def fit_transform(self, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
-        return self.fit(X, y).transform(X)
-
-    def resumen(self) -> dict:
-        return {
-            "config": {"filtro": asdict(self.filtro) if self.filtro else None,
-                       "wrapper": asdict(self.wrapper) if self.wrapper else None},
-            "columnas": {"inicio": self.n_inicio_, "filtro": self.n_filtro_, "final": len(self.seleccionadas_)},
-            "seleccionadas": self.seleccionadas_,
         }

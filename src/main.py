@@ -1,40 +1,81 @@
+import joblib
+import numpy as np
+from pathlib import Path
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from preprocess import RUTA_FINAL, TARGET, cargar_registro, guardar_registro, huella
+import pandas as pd
 
-from preprocess import *
+ROOT = Path(__file__).resolve().parents[1]
+
+from preprocess import (
+    RUTA_LIMPIO, cargar_dataset_limpio, ConfigDerivadas, agregar_derivadas, Preprocess,
+    ConfigInvalidos, ConfigOutliers, ConfigFaltantes, ConfigSplit, guardar_dataset_final, construir_dataset
+)
 
 
-df = cargar_dataset_limpio(RUTA_LIMPIO)
-#df = construir_dataset(guardar=RUTA_LIMPIO, versionar=True, 
-#                       comentario="Añadí los meses de forma ciclica para que tengan la distancia apropiada, y añadí la temperatura y la humedad de cada día")
-print(df.shape)
 
-# lags, medias móviles, ratios, cumplimiento de meta e interacciones (configurables con ConfigDerivadas)
-cfg_der = ConfigDerivadas()
-df = agregar_derivadas(df, cfg_der, verbose=True)
+def _metricas(y, pred) -> dict:
+    y, pred = np.asarray(y, dtype=float), np.asarray(pred, dtype=float)
+    ok = ~np.isnan(pred)  # los primeros días de un rolling quedan en NaN
+    y, pred = y[ok], pred[ok]
+    return {
+    "mae": float(mean_absolute_error(y, pred)),
+    "rmse": float(np.sqrt(mean_squared_error(y, pred))),
+    "r2": float(r2_score(y, pred)),
+    }
 
-pp = Preprocess(
+def cargar_datos(ruta: str | Path = RUTA_FINAL, incluir_test: bool = False) -> pd.DataFrame:
+    """Lee dataset_final.csv indexado por fecha. Por defecto descarta las filas de test:
+    ni siquiera quedan en memoria. Pasar incluir_test=True solo para la evaluación final."""
+    df = pd.read_csv(ruta, parse_dates=["fecha"]).sort_values("fecha").set_index("fecha")
+    if not incluir_test:
+        df = df[df["split"] != "test"]
+    return df
+
+def main():
+    df = cargar_datos(incluir_test=True)                    # dataset_final.csv, indexado por fecha
+    test = df[df["split"] == "test"].dropna(subset=[TARGET])  # el último día no tiene "frío de mañana"
+
+    X_test = test.drop(columns=[TARGET, "split"])
+    y_test = test[TARGET]
+
+    modelo = joblib.load(ROOT / "models" / "mlp_v1.0.0.joblib")
+    pred = modelo.predict(X_test[modelo.feature_names_in_])
+
+    met = _metricas(y_test, pred)
+    print(met)
+    #df=construir_dataset()
+    """"
+    df = cargar_dataset_limpio(RUTA_LIMPIO)
+    print(df.shape)
+
+    cfg_der = ConfigDerivadas()
+    df = agregar_derivadas(df, cfg_der, verbose=True)
+
+    pp = Preprocess(
         invalidos=ConfigInvalidos(accion="nan"),
-        outliers=ConfigOutliers(metodo="iqr", accion="nan"),
-        transformer=ConfigTransformer(metodo="yeo-johnson"),
-        scaler=ConfigScaler(metodo="robust"),
-        faltantes=ConfigFaltantes(estrategia="knn", n_vecinos=5),  # mean | median | interpolate | knn
-        split=ConfigSplit(test_size=0.15, val_size=0.15),  # 70/15/15 temporal
-        verbose=True
+        outliers=ConfigOutliers(metodo="iqr", accion="clip"),   # clip: val/test no pierden valores legítimos
+        transformer=None,   # van dentro del Pipeline del modelo (el CSV queda sin escalar)
+        scaler=None,
+        faltantes=ConfigFaltantes(estrategia="knn", n_vecinos=5),
+        split=ConfigSplit(test_size=0.15, val_size=0.15),
+        verbose=True,
     )
-X_train, X_val, X_test, y_train, y_val, y_test = pp.run(df)
-print(pp.resumen())
+    
+    X_train, X_val, X_test, y_train, y_val, y_test = pp.run(df)
+    print(pp.resumen())
 
-# selección de variables: config elegida con el estudio de Optuna de preprocesamiento.ipynb (sección 12)
-sel = SeleccionVariables(
-        filtro=ConfigFiltro(metodo="f_regression", k=60),      # pearson | spearman | f_regression | mutual_info
-        wrapper=ConfigWrapper(metodo="lasso", alpha=0.01),     # lasso | rfe | forward | backward
-        verbose=True
+    # La selección de variables ya no se hace acá: vive dentro del Pipeline del modelo (ver modelado).
+    guardar_dataset_final(
+        pp, {"train": (X_train, y_train), "val": (X_val, y_val), "test": (X_test, y_test)},
+        script="src/main.py", cfg_derivadas=cfg_der,    
     )
-X_train = sel.fit_transform(X_train, y_train)
-X_val, X_test = sel.transform(X_val), sel.transform(X_test)
+    """
 
-# data/processed/dataset_final.csv + checksum (data/logs/checksums.json) + linaje (data/logs/data_lineage.json)
-guardar_dataset_final(pp, {"train": (X_train, y_train), "val": (X_val, y_val), "test": (X_test, y_test)},
-                      script="src/main.py", cfg_derivadas=cfg_der, seleccion=sel)
+    
+    
 
 
+if __name__ == "__main__":
+    main()
 

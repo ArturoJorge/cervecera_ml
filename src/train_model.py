@@ -28,6 +28,7 @@ import platform
 import re
 import warnings
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -48,7 +49,7 @@ from sklearn.preprocessing import (MinMaxScaler, PowerTransformer, QuantileTrans
 
 from feature_selection import SEMILLA, SelectorFiltro
 from preprocess import (COL_FECHA, COLS_CICLICAS, COLS_SIN_LIMITES, ROOT, RUTA_LINEAGE, TARGET,
-                        ConfigDerivadas, ConfigFaltantes, ConfigInvalidos, ConfigOutliers, ConfigSplit,
+                        ConfigCorrelacion, ConfigDerivadas, ConfigFaltantes, ConfigInvalidos, ConfigOutliers, ConfigSplit,
                         Preprocess, _clave, agregar_derivadas, cargar_dataset_limpio, cargar_registro,
                         guardar_registro, huella)
 
@@ -221,6 +222,8 @@ def crear_preprocess(linaje: dict) -> Preprocess:
         transformer=None,   # transformador y scaler van dentro del pipeline del modelo
         scaler=None,
         split=ConfigSplit(**_paso_linaje(linaje, "split temporal")),
+        # los linajes de antes de este paso no tienen la clave: sin filtro por correlación
+        correlacion=cfg.get("correlacion") and ConfigCorrelacion(**cfg["correlacion"]),
     )
 
 
@@ -337,8 +340,10 @@ def _entorno() -> dict:
     return {"python": platform.python_version(), "scikit-learn": sklearn.__version__, "numpy": np.__version__,
             "pandas": pd.__version__, "joblib": joblib.__version__}
 
-def _pipeline_y_datos(cfg: dict) -> tuple[PipelineFrio, pd.DataFrame, pd.DataFrame, str]:
-    """(PipelineFrio sin entrenar, train, val, sha256 de la entrada) para una config de cargar_config()."""
+def _pipeline_y_datos(cfg: dict, correlacion: dict | None = None
+                      ) -> tuple[PipelineFrio, pd.DataFrame, pd.DataFrame, str]:
+    """(PipelineFrio sin entrenar, train, val, sha256 de la entrada) para una config de cargar_config().
+    `correlacion` ({"umbral", "metodo"}) pisa la del registro/linaje de la base."""
     entrada, linaje = cfg["registro"], cfg["linaje"]
     ruta_in = ROOT / linaje["input"]["archivo"]
     if not ruta_in.exists():
@@ -349,7 +354,9 @@ def _pipeline_y_datos(cfg: dict) -> tuple[PipelineFrio, pd.DataFrame, pd.DataFra
         print(f"AVISO: {linaje['input']['archivo']} cambió desde que se generó el dataset del modelo "
               f"({linaje['input']['sha256'][:12]}... -> {sha_in[:12]}...): el split y los datos no son los mismos.")
     preprocess = crear_preprocess(linaje)
-    train, val, _ = preprocess.train_test_split(cargar_dataset_limpio(ruta_in))   # test no se usa
+    if corr := correlacion or entrada.get("correlacion"):
+        preprocess.correlacion = ConfigCorrelacion(**corr)
+    train, val, _ =preprocess.train_test_split(cargar_dataset_limpio(ruta_in))   # test no se usa
     pipe = PipelineFrio(entrada["modelo"], params_modelo(entrada), cfg_pipeline(entrada),
                         crear_derivadas(linaje), preprocess)
     return pipe, train, val, sha_in
@@ -372,8 +379,10 @@ def _version_libre(modelo: str, version: str, registro: str | Path) -> str:
 
 def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None = None, datos: str = "train+val",
              carpeta: str | Path = RUTA_MODELOS, registro: str | Path = RUTA_REGISTRO_MODELOS,
-             guardar: bool = True) -> tuple[PipelineFrio, dict]:
+             guardar: bool = True, correlacion: dict | None = None) -> tuple[PipelineFrio, dict]:
     """Entrena PipelineFrio con la config de la versión `base` del registro.
+
+    correlacion: {"umbral", "metodo"} del filtro por correlación de Preprocess; None -> el de la base.
 
     datos="train+val": modelo para producción (no queda nada para medirlo; test sigue reservado). Se guarda en
         models/{modelo}_{version}.joblib y se agrega como una entrada nueva `version` en model_registry.json.
@@ -392,7 +401,7 @@ def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None 
     base = entrada["version"]
     print(f"Config de {modelo} {base} ({entrada['archivo']})")
 
-    pipe, train, val, sha_in = _pipeline_y_datos(cfg)
+    pipe, train, val, sha_in = _pipeline_y_datos(cfg, correlacion)
     datos_fit = train if datos == "train" else pd.concat([train, val])
     t0 = datetime.now()
     pipe.fit(datos_fit)
@@ -426,6 +435,7 @@ def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None 
         "corrida": entrada.get("corrida"),
         # dataset: el del linaje de la base, así cargar_config() también funciona con esta versión
         **{k: entrada[k] for k in ("dataset", "arquitectura", "hiperparametros", "preprocesamiento")},
+        "correlacion": pipe.preprocess.correlacion and asdict(pipe.preprocess.correlacion),
         "metricas": metricas,   # con train+val solo hay métricas de train: val está adentro y test reservado
         "entrenado_con": {"split": datos, "n_filas": len(datos_fit),
                           "desde": f"{datos_fit[COL_FECHA].min():%Y-%m-%d}",
@@ -461,11 +471,14 @@ def main() -> None:
                                        "(por defecto, la de menor MAE de validación)")
     parser.add_argument("--datos", default="train+val", choices=["train+val", "train"],
                         help="train = solo verificar la base contra val, sin guardar")
+    parser.add_argument("--correlacion", type=float, metavar="UMBRAL",
+                        help="descarta variables con |corr| Spearman > UMBRAL en Preprocess (por defecto, lo de la base)")
     args = parser.parse_args()
     version = args.version
     if args.datos == "train+val" and not version:
         version = input("Versión del modelo nuevo (p. ej. v1.0.0): ")
-    entrenar(args.modelo, version, args.base, args.datos)
+    corr = None if args.correlacion is None else {"umbral": args.correlacion, "metodo": "spearman"}
+    entrenar(args.modelo, version, args.base, args.datos, correlacion=corr)
 
 
 if __name__ == "__main__":

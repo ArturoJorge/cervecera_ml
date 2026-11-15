@@ -33,18 +33,9 @@ def cargar_datos(ruta: str | Path = RUTA_FINAL, incluir_test: bool = False) -> p
     return df
 
 def main():
-    df = cargar_datos(incluir_test=True)                    # dataset_final.csv, indexado por fecha
-    test = df[df["split"] == "test"].dropna(subset=[TARGET])  # el último día no tiene "frío de mañana"
+    # Crudos -> data/clean/df_total.xlsx (limpieza + clima + mes cíclico + target)
+    df_total = construir_dataset(guardar=RUTA_LIMPIO)
 
-    X_test = test.drop(columns=[TARGET, "split"])
-    y_test = test[TARGET]
-
-    modelo = joblib.load(ROOT / "models" / "mlp_v1.0.0.joblib")
-    pred = modelo.predict(X_test[modelo.feature_names_in_])
-
-    met = _metricas(y_test, pred)
-    print(met)
-    #df=construir_dataset()
     """"
     df = cargar_dataset_limpio(RUTA_LIMPIO)
     print(df.shape)

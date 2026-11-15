@@ -102,7 +102,9 @@ scipy==1.18.1
 seaborn==0.13.2
 send2trash==2.1.0
 setuptools==83.0.0
+shap==0.54.1
 six==1.17.0
+slicer==0.0.8
 soupsieve==3.0.1
 sqlalchemy==2.1.4
 stack-data==0.6.3

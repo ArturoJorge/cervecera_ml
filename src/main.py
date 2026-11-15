@@ -273,7 +273,7 @@ def estudiar(n_trials: int = N_TRIALS, timeout: float | None = TIMEOUT, n_splits
         pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=1),
     )
     t0 = time.perf_counter()
-    estudio.optimize(_objetivo(train, cv, anotar_cv), n_trials=n_trials, timeout=timeout, show_progress_bar=False)
+    estudio.optimize(_objetivo(train, cv, anotar_cv), n_trials=n_trials, timeout=timeout, show_progress_bar=True)
     estados = [t.state for t in estudio.trials]
     completos = sum(s == optuna.trial.TrialState.COMPLETE for s in estados)
     podados = sum(s == optuna.trial.TrialState.PRUNED for s in estados)

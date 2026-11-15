@@ -254,13 +254,15 @@ def convertir_object_a_numerico(df: pd.DataFrame) -> pd.DataFrame:
 
 def completar_dias(df: pd.DataFrame) -> pd.DataFrame:
     """Agrega los días que faltan en el calendario (incompletos o sin registro) como el promedio
-    del día válido anterior y el siguiente, para que el shift del target sea siempre al día siguiente."""
+    de los últimos 3 días válidos (los imputados no cuentan), para que el shift del target sea
+    siempre al día siguiente."""
     df = df.set_index(COL_FECHA).sort_index()
     df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq="D", name=COL_FECHA))
     nuevos = df.isna().all(axis=1)
     num = df.select_dtypes("number").columns
     df = df.astype(dict.fromkeys(num, "float64"))  # el promedio puede no ser entero (columnas Int64)
-    promedio = (df[num].ffill() + df[num].bfill()) / 2
+    # media de las últimas 3 filas reales (por columna, ignora NaN), arrastrada a los huecos
+    promedio = df.loc[~nuevos, num].rolling(3, min_periods=1).mean().reindex(df.index).ffill()
     df.loc[nuevos, num] = promedio.loc[nuevos]
     return df.copy().reset_index()  # copy: el .loc por columna deja el frame fragmentado
 
@@ -345,7 +347,7 @@ def construir_dataset(
     df = agregar_mes_ciclico(df)
     df = agregar_target(df)
     if verbose:
-        print(f"Días agregados como promedio anterior/siguiente: {len(df) - n_antes}")
+        print(f"Días agregados como promedio de los últimos 3 días: {len(df) - n_antes}")
 
     if verbose:
         print(f"Dataset construido: {df.shape} | columnas eliminadas: {len(eliminadas)}")

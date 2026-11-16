@@ -379,10 +379,14 @@ def _version_libre(modelo: str, version: str, registro: str | Path) -> str:
 
 def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None = None, datos: str = "train+val",
              carpeta: str | Path = RUTA_MODELOS, registro: str | Path = RUTA_REGISTRO_MODELOS,
-             guardar: bool = True, correlacion: dict | None = None) -> tuple[PipelineFrio, dict]:
+             guardar: bool = True, correlacion: dict | None = None, config: dict | None = None,
+             metricas_extra: dict | None = None) -> tuple[PipelineFrio, dict]:
     """Entrena PipelineFrio con la config de la versión `base` del registro.
 
     correlacion: {"umbral", "metodo"} del filtro por correlación de Preprocess; None -> el de la base.
+    config: campos de la entrada del registro que pisan los de la base ("arquitectura", "hiperparametros",
+        "preprocesamiento", "estudio_optuna", ...), p. ej. el mejor trial de Optuna de src/main.py.
+    metricas_extra: se suman a las métricas de la entrada nueva (p. ej. mae_cv y mae_val del estudio).
 
     datos="train+val": modelo para producción (no queda nada para medirlo; test sigue reservado). Se guarda en
         models/{modelo}_{version}.joblib y se agrega como una entrada nueva `version` en model_registry.json.
@@ -397,6 +401,8 @@ def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None 
             raise ValueError("Falta la versión con la que se registra el modelo (p. ej. version='v1.0.0')")
         version = _version_libre(modelo, version, registro)   # antes de entrenar: falla rápido
     cfg = cargar_config(modelo, base, registro)
+    if config:
+        cfg["registro"] = {**cfg["registro"], **config}
     entrada, linaje = cfg["registro"], cfg["linaje"]
     base = entrada["version"]
     print(f"Config de {modelo} {base} ({entrada['archivo']})")
@@ -416,9 +422,10 @@ def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None 
         # val necesita la historia de train para sus lags
         pred_val = pipe.predict(pd.concat([train, val])).loc[pd.to_datetime(val[COL_FECHA])]
         metricas |= {f"{k}_val": v for k, v in _metricas(val.set_index(COL_FECHA)[TARGET], pred_val).items()}
-        reg = entrada["metricas"]["mae_val"]
-        print(f"MAE val {metricas['mae_val']:.2f} | registro {reg:.2f} | diferencia {metricas['mae_val'] - reg:+.2f}")
-        if pipe.columnas_ != entrada["columnas"]:
+        reg = entrada["metricas"].get("mae_val")   # las versiones entrenadas con train+val no tienen
+        print(f"MAE val {metricas['mae_val']:.2f}" + ("" if reg is None else
+              f" | registro {reg:.2f} | diferencia {metricas['mae_val'] - reg:+.2f}"))
+        if not config and pipe.columnas_ != entrada["columnas"]:
             print("AVISO: las variables elegidas no son las del registro")
     print("Métricas:", {k: round(v, 3) for k, v in metricas.items()})
 
@@ -436,7 +443,8 @@ def entrenar(modelo: str = MODELO, version: str | None = None, base: str | None 
         # dataset: el del linaje de la base, así cargar_config() también funciona con esta versión
         **{k: entrada[k] for k in ("dataset", "arquitectura", "hiperparametros", "preprocesamiento")},
         "correlacion": pipe.preprocess.correlacion and asdict(pipe.preprocess.correlacion),
-        "metricas": metricas,   # con train+val solo hay métricas de train: val está adentro y test reservado
+        # con train+val solo hay métricas de train (val está adentro y test reservado), más las de metricas_extra
+        "metricas": metricas | (metricas_extra or {}),
         "entrenado_con": {"split": datos, "n_filas": len(datos_fit),
                           "desde": f"{datos_fit[COL_FECHA].min():%Y-%m-%d}",
                           "hasta": f"{datos_fit[COL_FECHA].max():%Y-%m-%d}",

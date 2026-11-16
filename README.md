@@ -71,7 +71,7 @@ Un `.csv` con una fila por día:
 - **Versiones `v0.x`:** su preprocesamiento se reconstruye a partir de `data/clean/df_total.xlsx`, que no está en el repositorio. La versión por defecto (`mlp` `latest`) no lo necesita.
 
 ## 3. El modelo
-El modelo de producción es **`mlp_v1.0.0`**: una red neuronal (MLP) que recibe 26 variables de un día D y predice el frío (kW) del día D+1. El análisis completo, con SHAP y un dashboard interactivo de la red, está en [`notebooks/analisis_modelo.ipynb`](notebooks/analisis_modelo.ipynb); los gráficos de esta sección salen de ahí (`reports/figuras/`).
+El modelo de producción es **`mlp_v1.0.0`**: una red neuronal (MLP) que recibe 26 variables de un día D y predice el frío (kW) del día D+1.
 
 | | |
 |---|---|
@@ -79,15 +79,14 @@ El modelo de producción es **`mlp_v1.0.0`**: una red neuronal (MLP) que recibe 
 | Entradas | frío del día y sus medias de 3 y 7 días, consumo de `servicios` y `sala maq`, hl envasados (con rezagos y medias móviles), temperatura y humedad (Open-Meteo) y el mes (`mes_sin`, `mes_cos`) |
 | Preprocesamiento | variables derivadas → `Preprocess` (inválidos, outliers, faltantes) → `RobustScaler`; el target se estandariza dentro del modelo |
 | Entrenamiento | train + val: 1,030 días (2020-07-01 a 2023-04-26), hiperparámetros elegidos con Optuna |
-| Test (182 días nunca vistos, 2023-04-27 a 2023-10-25) | **MAE 2,796 kW**, RMSE 3,641 kW, R² 0.60; la persistencia (mañana = hoy) da MAE 3,312 kW (R² 0.43) → **≈16 % menos error** |
+| Test (182 días nunca vistos, 2023-04-27 a 2023-10-25) | **MAE 2,796 kW**, RMSE 3,641 kW, R² 0.60; la persistencia da MAE 3,312 kW (R² 0.43) -> **≈15 % menos error** |
 
 ### Qué tan bien predice
 ![Real vs predicho en test](reports/figuras/test_real_vs_pred.png)
 
-Sigue el nivel y la estacionalidad, pero suaviza: no anticipa las caídas bruscas de un día (paradas), que no dejan ninguna señal en los datos del día anterior.
+Sigue el nivel y la estacionalidad, pero suaviza: no anticipa las caídas bruscas de un día, que no dejan ninguna señal en los datos del día anterior.
 
-### Qué variables usa (SHAP)
-SHAP reparte cada predicción en aportes en kW, uno por variable: predicción = base (23,025 kW, la predicción media) + suma de aportes.
+### SHAP
 
 ![Importancia por grupo](reports/figuras/shap_grupos.png)
 
@@ -95,7 +94,7 @@ Un tercio de lo que mueve la predicción es la **historia del propio frío**; le
 
 ![Beeswarm SHAP](reports/figuras/shap_beeswarm.png)
 
-Cada punto es un día de test; el color es el valor de la variable. Más frío hoy, más consumo de planta, más producción y meses de verano → más frío mañana. `hl cerveza envasada lag1` tiene el signo contrario al de `hl cerveza envasada`: son casi la misma variable y la red usa en parte su diferencia (cuánto cambió la producción respecto de ayer).
+Cada punto es un día de test; el color es el valor de la variable. Más frío hoy, más consumo de planta, más producción y meses de verano -> más frío mañana. `hl cerveza envasada lag1` tiene el signo contrario al de `hl cerveza envasada`: son casi la misma variable y la red usa en parte su diferencia (cuánto cambió la producción respecto de ayer).
 
 ### Una predicción paso a paso
 ![Waterfall día típico](reports/figuras/shap_waterfall_tipico.png)
@@ -109,7 +108,7 @@ Los aportes crecen en línea recta con cada variable: **en el rango de los datos
 
 ![Pesos y activaciones de la red](reports/figuras/red_forma.png)
 
-La razón está en la red: las activaciones `tanh` quedan entre −0.5 y 0.5 y ninguna se satura, y en ese rango `tanh(x) ≈ x`. La regularización L2 que eligió Optuna mantiene los pesos chicos. En la primera capa, las filas de temperatura y humedad casi no tienen peso, igual que lo que muestra SHAP.
+Las activaciones `tanh` quedan entre −0.5 y 0.5 y ninguna se satura, y en ese rango `tanh(x) ≈ x`. La regularización L2 mantiene los pesos chicos. En la primera capa, las filas de temperatura y humedad casi no tienen peso, igual que lo que muestra SHAP.
 
 ### Dashboard
 ![Dashboard del MLP](reports/figuras/dashboard_mlp.png)

@@ -1165,5 +1165,112 @@
       "joblib": "1.6.0"
     },
     "cargar_con": "sys.path.insert(0, 'src'); joblib.load('models/mlp_v2.0.3.joblib').predecir_manana(df)"
+  },
+  {
+    "modelo": "rf",
+    "version": "v1.0.0",
+    "tipo": "PipelineFrio",
+    "archivo": "models/rf_v1.0.0.joblib",
+    "sha256": "0cfa5dc31042454c789a897af7f301707463892d248e960ac1c6abd07128c0ba",
+    "fecha": "2026-11-15T22:55:35",
+    "version_previa": null,
+    "config_de": "mlp v2.0.3",
+    "estudio_optuna": "rf_v0.0.0_2026-11-15T22:50:03",
+    "corrida": "2026-11-15T22:50:03",
+    "dataset": {
+      "archivo": "data/processed/dataset_final.csv",
+      "sha256": "c3aefeb4860d624f9d90402718f4fe53ed8a633daeb4f6b0898404b2959acbaa"
+    },
+    "arquitectura": {},
+    "hiperparametros": {
+      "random_state": 42,
+      "n_jobs": -1,
+      "n_estimators": 200,
+      "max_depth": 16,
+      "min_samples_leaf": 7,
+      "max_features": 0.5,
+      "max_samples": 0.6185259948003885
+    },
+    "preprocesamiento": {
+      "transformador": "ninguno",
+      "scaler": "ninguno",
+      "seleccion": "filtro",
+      "filtro_metodo": "mutual_info",
+      "k": 10,
+      "umbral_redundancia": 0.9915166286419773,
+      "externas_siempre": [
+        "temp media (°c)",
+        "humedad max (%)",
+        "humedad min (%)",
+        "mes_sin",
+        "mes_cos",
+        "temp media (°c) lag7",
+        "hl cerveza envasada lag1",
+        "hl cerveza envasada lag2",
+        "hl cerveza envasada lag7",
+        "temp media (°c) mm7",
+        "hl cerveza envasada mm3",
+        "hl cerveza envasada mm7",
+        "hl cerveza envasada mm14"
+      ]
+    },
+    "correlacion": {
+      "umbral": 0.9,
+      "metodo": "spearman"
+    },
+    "metricas": {
+      "mae_train": 2253.3980255197393,
+      "rmse_train": 3070.9572785183914,
+      "r2_train": 0.8540725774384623,
+      "mae_cv": 3235.033702492513,
+      "std_cv": 305.8240277779157,
+      "mae_val": 2273.7469593215787,
+      "rmse_val": 2958.5807048796896,
+      "r2_val": 0.4200311855247413
+    },
+    "entrenado_con": {
+      "split": "train+val",
+      "n_filas": 1030,
+      "desde": "2020-07-01",
+      "hasta": "2023-04-26",
+      "entrada": {
+        "archivo": "data/clean/df_total.xlsx",
+        "sha256": "e4d4d73e6d7a4b5e2253cbf5f558274896b48438e0781771f26e1d914aebc9c0"
+      },
+      "seg": 4.0
+    },
+    "n_features": 21,
+    "columnas": [
+      "frio (kw)",
+      "id",
+      "frio (kw) mm14",
+      "planta (kw) mm7",
+      "unnamed: 3",
+      "meta ee bodega",
+      "frio (kw) lag1",
+      "meta et envasado",
+      "temp max (°c) x frio (kw)",
+      "frio (kw) lag2",
+      "temp max (°c)",
+      "humedad media (%)",
+      "mes_sin",
+      "mes_cos",
+      "temp media (°c) lag7",
+      "hl cerveza envasada lag1",
+      "hl cerveza envasada lag2",
+      "hl cerveza envasada lag7",
+      "temp media (°c) mm7",
+      "hl cerveza envasada mm3",
+      "hl cerveza envasada mm14"
+    ],
+    "semilla": 42,
+    "entorno": {
+      "python": "3.12.3",
+      "scikit-learn": "1.9.1",
+      "numpy": "2.5.3",
+      "pandas": "3.0.6",
+      "joblib": "1.6.0"
+    },
+    "cargar_con": "sys.path.insert(0, 'src'); joblib.load('models/rf_v1.0.0.joblib').predecir_manana(df)"
   }
 ]

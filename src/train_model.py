@@ -36,8 +36,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import sklearn
-import xgboost
-from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.base import BaseEstimator
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.exceptions import ConvergenceWarning
@@ -48,7 +47,6 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (MinMaxScaler, PowerTransformer, QuantileTransformer,
                                    RobustScaler, StandardScaler)
-from xgboost import XGBRegressor
 
 from feature_selection import SEMILLA, SelectorFiltro
 from preprocess import (COL_FECHA, COLS_CICLICAS, COLS_SIN_LIMITES, ROOT, RUTA_LINEAGE, TARGET,
@@ -124,10 +122,7 @@ def construir_pipeline(estimador, columnas, cfg: dict, rfe_estimador=None, memor
 
 
 def columnas_elegidas(pipe: Pipeline) -> list[str]:
-    """Columnas que llegan al modelo (después de todos los pasos de selección).
-    Ensamble: la unión de las columnas de sus miembros (cada uno hace su propia selección)."""
-    if isinstance(pipe[-1], Ensamble):
-        return sorted({c for p in pipe[-1].pipes_ for c in columnas_elegidas(p)})
+    """Columnas que llegan al modelo (después de todos los pasos de selección)."""
     return list(pipe[:-1].get_feature_names_out())
 
 
@@ -140,42 +135,13 @@ def crear_mlp(**params) -> TransformedTargetRegressor:
     return TransformedTargetRegressor(regressor=MLPRegressor(**params), transformer=StandardScaler())
 
 
-class Ensamble(BaseEstimator, RegressorMixin):
-    """Promedio (ponderado) de pipelines: cada miembro tiene su propio prep + selección + modelo.
-
-    miembros: [{"modelo": "mlp" | "rf" | "xgboost" | ..., "params": {...}, "cfg": {...}}] (puede traer
-    más claves, p. ej. "version", que se ignoran). pesos=None -> promedio simple.
-    Va dentro de construir_pipeline con cfg de paso directo (sin transformador, scaler ni selección)."""
-
-    def __init__(self, miembros: list[dict], pesos: list[float] | None = None):
-        self.miembros = miembros
-        self.pesos = pesos
-
-    def fit(self, X, y):
-        self.pipes_ = [crear_modelo(m["modelo"], m["params"], m["cfg"], X.columns).fit(X, y)
-                       for m in self.miembros]
-        self.feature_names_in_ = np.asarray(X.columns)
-        return self
-
-    def predict(self, X):
-        pesos = self.pesos or [1 / len(self.pipes_)] * len(self.pipes_)
-        return sum(w * p.predict(X) for w, p in zip(pesos, self.pipes_))
-
-
-def crear_ensamble(miembros: list[dict], pesos: list[float] | None = None) -> Ensamble:
-    return Ensamble(miembros, pesos)
-
-
-# los modelos que hay en el registro (y las opciones de --modelo)
-ESTIMADORES = {"mlp": crear_mlp, "lasso": Lasso, "rf": RandomForestRegressor, "xgboost": XGBRegressor,
-               "ensamble": crear_ensamble}
+ESTIMADORES = {"mlp": crear_mlp, "lasso": Lasso, "rf": RandomForestRegressor}   # los modelos que hay en el registro
 
 
 def crear_modelo(nombre: str, params: dict, cfg: dict, columnas) -> Pipeline:
-    """Pipeline sin entrenar. El RFE usa el mismo modelo solo con lasso; el resto usa Ridge
-    (el MLP no tiene coef_ y con bosques/boosting el RFE es carísimo)."""
+    """Pipeline sin entrenar. El RFE usa el mismo modelo, salvo el MLP (sin coef_) que usa Ridge."""
     clase = ESTIMADORES[nombre]
-    rfe_est = clase(**params) if nombre == "lasso" else Ridge()
+    rfe_est = Ridge() if nombre == "mlp" else clase(**params)
     return construir_pipeline(clase(**params), columnas, cfg, rfe_est)
 
 
@@ -373,7 +339,7 @@ def _metricas(y: pd.Series, pred: pd.Series) -> dict:
 
 def _entorno() -> dict:
     return {"python": platform.python_version(), "scikit-learn": sklearn.__version__, "numpy": np.__version__,
-            "pandas": pd.__version__, "joblib": joblib.__version__, "xgboost": xgboost.__version__}
+            "pandas": pd.__version__, "joblib": joblib.__version__}
 
 def _pipeline_y_datos(cfg: dict, correlacion: dict | None = None
                       ) -> tuple[PipelineFrio, pd.DataFrame, pd.DataFrame, str]:

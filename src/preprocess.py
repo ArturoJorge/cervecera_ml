@@ -15,6 +15,8 @@ from scipy import stats
 from sklearn.impute import KNNImputer, SimpleImputer
 from sklearn.preprocessing import MinMaxScaler, PowerTransformer, RobustScaler, StandardScaler
 
+from feature_selection import _scores_filtro
+
 # =============================================================================
 # Rutas y constantes
 # =============================================================================
@@ -254,13 +256,15 @@ def convertir_object_a_numerico(df: pd.DataFrame) -> pd.DataFrame:
 
 def completar_dias(df: pd.DataFrame) -> pd.DataFrame:
     """Agrega los días que faltan en el calendario (incompletos o sin registro) como el promedio
-    del día válido anterior y el siguiente, para que el shift del target sea siempre al día siguiente."""
+    de los últimos 3 días válidos (los imputados no cuentan), para que el shift del target sea
+    siempre al día siguiente."""
     df = df.set_index(COL_FECHA).sort_index()
     df = df.reindex(pd.date_range(df.index.min(), df.index.max(), freq="D", name=COL_FECHA))
     nuevos = df.isna().all(axis=1)
     num = df.select_dtypes("number").columns
     df = df.astype(dict.fromkeys(num, "float64"))  # el promedio puede no ser entero (columnas Int64)
-    promedio = (df[num].ffill() + df[num].bfill()) / 2
+    # media de las últimas 3 filas reales (por columna, ignora NaN), arrastrada a los huecos
+    promedio = df.loc[~nuevos, num].rolling(3, min_periods=1).mean().reindex(df.index).ffill()
     df.loc[nuevos, num] = promedio.loc[nuevos]
     return df.copy().reset_index()  # copy: el .loc por columna deja el frame fragmentado
 
@@ -345,7 +349,7 @@ def construir_dataset(
     df = agregar_mes_ciclico(df)
     df = agregar_target(df)
     if verbose:
-        print(f"Días agregados como promedio anterior/siguiente: {len(df) - n_antes}")
+        print(f"Días agregados como promedio de los últimos 3 días: {len(df) - n_antes}")
 
     if verbose:
         print(f"Dataset construido: {df.shape} | columnas eliminadas: {len(eliminadas)}")
@@ -624,6 +628,13 @@ class ConfigSplit:
     test_size: float = 0.15
     val_size: float = 0.15   # 0 -> sin validación
 
+@dataclass
+class ConfigCorrelacion:
+    """Redundancia: de cada grupo de variables con |corr| > umbral queda la más correlacionada con el target.
+    Se calcula con train, sobre todas las variables (originales y derivadas) ya imputadas."""
+    umbral: float = 0.9
+    metodo: Literal["pearson", "spearman"] = "spearman"
+
 
 _ESTRATEGIAS_FALTANTES = {"mean", "median", "interpolate", "knn"}
 _ACCIONES = {"nan", "clip", "delete"}
@@ -642,6 +653,7 @@ class Preprocess:
     solo con train; `transform` los aplica en este orden: inválidos -> outliers -> faltantes.
     Cualquier paso se desactiva pasando None en su config. Las filas sin target se eliminan siempre.
     """
+    correlacion = None  # los Preprocess pickleados antes de este paso no tienen el atributo: lo leen como None
 
     def __init__(
         self,
@@ -654,6 +666,7 @@ class Preprocess:
         scaler: ConfigScaler | None = _DEFAULT,       # configuración del escalador
         transformer: ConfigTransformer | None = _DEFAULT, # configuración del transformador
         split: ConfigSplit = _DEFAULT,                # configuración del train/test split
+        correlacion: ConfigCorrelacion | None = _DEFAULT,  # variables redundantes (|corr| > umbral)
 
         verbose: bool = False,  # True: escribe en consola cada paso que se va haciendo
     ):
@@ -668,6 +681,7 @@ class Preprocess:
         self.scaler = ConfigScaler() if scaler is _DEFAULT else scaler
         self.transformer = ConfigTransformer() if transformer is _DEFAULT else transformer
         self.split = ConfigSplit() if split in (_DEFAULT, None) else split
+        self.correlacion = ConfigCorrelacion() if correlacion is _DEFAULT else correlacion
         self.verbose = verbose
 
         if self.faltantes and self.faltantes.estrategia not in _ESTRATEGIAS_FALTANTES:
@@ -823,8 +837,33 @@ class Preprocess:
                 self._imputador = SimpleImputer(strategy=estr, keep_empty_features=True).fit(X)
             self._paso(f"[fit] imputador {cfg.estrategia} entrenado, {len(self._cols_descartar)} columnas descartadas por nulos")
 
+        if self.correlacion:  # al final: mismas variables (ya imputadas) que va a ver el modelo
+            if self.target not in train.columns:
+                raise ValueError(f"Para descartar variables por correlación hace falta {self.target!r} en train")
+            if self.faltantes:
+                X = self._imputar(X)
+            self._redundantes = self._buscar_redundantes(X, train.loc[X.index, self.target])
+            self._log["fit"] = {"descartadas_por_correlacion": self._redundantes}
+            self._paso(f"[fit] correlación > {self.correlacion.umbral} ({self.correlacion.metodo}): "
+                       f"{len(self._redundantes)} columnas descartadas")
+
         self._fitted = True  # esto está para que no transformemos sin fittear
         return self
+
+    def _buscar_redundantes(self, X: pd.DataFrame, y: pd.Series) -> dict[str, str]:
+        """{descartada: elegida con la que supera el umbral}. Se recorren las variables de mayor a menor
+        |corr| con el target: cada una queda si no supera el umbral con ninguna de las ya elegidas
+        (mismo criterio que SelectorFiltro, sin top-k)."""
+        ok = y.notna()
+        s, corr = _scores_filtro(X[ok], y[ok], self.correlacion.metodo)
+        elegidas, redundantes = [], {}
+        for c in s.index:
+            par = next((e for e in elegidas if corr.at[c, e] > self.correlacion.umbral), None)
+            if par is None:
+                elegidas.append(c)
+            else:
+                redundantes[c] = par
+        return redundantes
 
     def _imputar(self, X: pd.DataFrame) -> pd.DataFrame:
         if self.faltantes.estrategia == "knn":
@@ -874,6 +913,11 @@ class Preprocess:
             X = self._imputar(X)
             self._paso(f"[{nombre}] faltantes ({self.faltantes.estrategia}): {log['faltantes_valores']} valores imputados")
 
+        if self.correlacion:
+            X = X.drop(columns=list(self._redundantes))
+            log["columnas_descartadas_por_correlacion"] = len(self._redundantes)
+            self._paso(f"[{nombre}] correlación: {len(self._redundantes)} columnas descartadas")
+
         log["filas_fin"] = len(X)
         self._log[nombre] = log
         self._paso(f"[{nombre}] fin {X.shape}")
@@ -903,7 +947,8 @@ class Preprocess:
     def resumen(self):
         """Configuración usada y qué hizo cada paso en train/test."""
         cfgs = {"invalidos": self.invalidos, "outliers": self.outliers,
-                "faltantes": self.faltantes, "split": self.split, "transformer": self.transformer, "scaler": self.scaler}
+                "faltantes": self.faltantes, "split": self.split, "transformer": self.transformer, "scaler": self.scaler,
+                "correlacion": self.correlacion}
         return {
             "config": {k: asdict(v) if v else None for k, v in cfgs.items()},
             "pasos": self._log,

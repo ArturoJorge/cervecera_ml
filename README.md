@@ -35,7 +35,7 @@ Esto usa la última versión del modelo `mlp` y escribe `results/predicciones.cs
 | Opción | Por defecto | Qué hace |
 |---|---|---|
 | `--modelo` | `mlp` | Tipo de modelo del registro (`mlp` o `lasso`). |
-| `--version` | `latest` | `latest` usa la versión más alta de ese tipo de modelo; también se puede pedir una específica, por ejemplo `v1.0.0`. |
+| `--version` | `v1.0.0` | `latest` usa la versión más alta de ese tipo de modelo; también se puede pedir una específica, por ejemplo `v2.0.2`. |
 | `--salida` | `results/predicciones.csv` | Ruta del `.csv` de salida. |
 
 ```bash

@@ -140,7 +140,7 @@ def main():
     parser = argparse.ArgumentParser(description="Predice el frío (kW) del día siguiente para un Excel de planta.")
     parser.add_argument("filepath", help="Excel de planta (.xlsx)")
     parser.add_argument("--modelo", default="mlp", help="tipo de modelo del registro (por defecto %(default)s)")
-    parser.add_argument("--version", default="latest", help="'latest' o una versión, p. ej. v1.0.0")
+    parser.add_argument("--version", default="v1.0.0", help="'latest' o una versión, p. ej. v1.0.0")
     parser.add_argument("--salida", default=str(RUTA_PREDICCIONES), help="csv de salida (por defecto %(default)s)")
     args = parser.parse_args()
     try:
